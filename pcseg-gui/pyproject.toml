@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pcseg-gui"
+version = "0.1.0"
+description = "Minimal 3D viewer/screenshot tool for pcseg point clouds and segmentation results."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pcseg",
+    "PyQt6",
+    # Pinned exactly: this code calls pyqtgraph.opengl.GLViewWidget's low-level
+    # matrix API (setProjection, currentProjection/currentModelView) directly,
+    # which is NOT stable across pyqtgraph releases - a newer release moved
+    # these onto a GLViewMixin with a different signature (confirmed while
+    # debugging on Windows, where an unpinned install grabbed that version and
+    # crashed with TypeErrors this pin avoids). Bump deliberately, not by drift.
+    "pyqtgraph==0.14.0",
+    "PyOpenGL",
+    "laspy",
+    "numpy",
+]
+
+[project.scripts]
+pcseg-view = "pcseg_gui.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
