@@ -1063,3 +1063,11 @@ for confirmation first. The reloaded, full-resolution scan (with its
 transferred layers) becomes the new working state afterward, same as a
 manual Reload at Different Detail would - it isn't reverted back to the
 coarser detail once the export finishes.
+
+## Affiliation
+
+Developed at the [Department of Photogrammetry and Geoinformatics](https://fmt.bme.hu/node/1251?language=en),
+Budapest University of Technology and Economics (BME), Faculty of Civil
+Engineering.
+
+3 Műegyetem rkp., K building first floor 31. Budapest, H-1111, Hungary
