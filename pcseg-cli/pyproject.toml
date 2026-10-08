@@ -1,0 +1,81 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pcseg"
+version = "0.1.0"
+description = "CLI pipeline for prompt-driven point cloud segmentation on structured TLS/LiDAR scans (GroundingDINO + SAM2)."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+# Lower bounds are the exact versions this was actually developed and tested
+# against (2026-09-06), not guessed minimums - untested older versions may or
+# may not work. No upper bounds here: pcseg is an application, not a library
+# other packages need to resolve against, so there's no reason to pre-emptively
+# cap these - numpy/opencv/scipy/scikit-learn/laspy/pye57 are pcseg's own
+# direct dependencies, used through their stable public APIs. The segmentation
+# extra below is a different situation - see its own comment.
+dependencies = [
+    "numpy>=2.4.3",
+    "opencv-python>=5.0.0.93",
+    "scipy>=1.17.1",
+    "scikit-learn>=1.8.0",
+    "laspy>=2.7.0",
+    "pye57>=0.4.17",
+]
+
+[project.optional-dependencies]
+# GroundingDINO and SAM2 are not installed via these extras alone - see README
+# "Installation" for the checkpoint/repo setup they additionally require.
+#
+# Unlike `dependencies` above, several of these DO get upper-bounded, and
+# deliberately break with the "no upper bounds" philosophy: groundingdino-py
+# is an effectively unmaintained wrapper (latest release 0.4.0, last of only
+# five ever published) whose vendored model-building code reaches directly
+# into these libraries' internal/deprecated APIs rather than their stable
+# public surface - exactly the kind of usage a normal minor/major release
+# elsewhere is free to break without it counting as their own compatibility
+# break. transformers 5.0.0 already did this for real (see below) - the same
+# pattern is a live risk for torch/torchvision/timm, evidenced by
+# groundingdino/SAM2 themselves emitting deprecation warnings against all
+# three during normal use (torch.cuda.amp.autocast, torch.utils.checkpoint's
+# use_reentrant default, timm.models.layers) - none broken yet, but each is a
+# removed-API-away from repeating the transformers incident. Upper bounds
+# below are set just past the newest version confirmed to still work
+# (2026-09-09); bump them forward (not away) once a newer version's been
+# verified against a real scan, not just because pip complains.
+segmentation = [
+    "torch>=2.13.0,<3",
+    "torchvision<1",
+    "timm<2",
+    "pillow>=12.2.0",
+    "groundingdino-py>=0.4.0",
+    # groundingdino-py itself declares no upper bound on transformers, and its
+    # vendored BertModelWarper calls bert_model.get_head_mask directly - a
+    # ModuleUtilsMixin method removed in transformers 5.0.0 (confirmed present
+    # in every 4.x release through 4.57.6, gone starting exactly at 5.0.0).
+    # Without this pin, a fresh install picks up the latest transformers and
+    # crashes on model load with "'BertModel' object has no attribute
+    # 'get_head_mask'" - hit on a real Windows machine (2026-09-09).
+    "transformers>=4.36,<5",
+    # Redundant with transformers 4.x's own "huggingface-hub<1.0" constraint
+    # today, but made explicit rather than accidental: dino_service.py reads
+    # HF_HUB_OFFLINE directly, and huggingface_hub 1.0 (already out on PyPI,
+    # just not yet reachable through the transformers pin above) is a major
+    # rewrite - no reason to rely on a side effect of an unrelated package's
+    # own pin to keep this one sane.
+    "huggingface_hub<1",
+]
+dev = [
+    "pytest",
+]
+
+[project.scripts]
+pcseg = "pcseg.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
