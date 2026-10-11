@@ -44,13 +44,18 @@ def merge_by_3d_iou(
       inherently local (ground near the scanner is close to every view),
       so it relies on `view_keys` gating.
 
-    `view_keys[i]` restricts the border-overlap and spatial rules to
-    grid-adjacent views only (4-connected on the sweep's theta/phi grid,
-    wrapping at the 360/0 seam via `n_theta`). Each entry is normally one
-    `(theta_idx, phi_idx)` tuple, or a set of them for a "merge the merges"
-    second pass (see `merge_by_3d_iou_iterative`): pass
-    `return_view_keys=True`'s per-cluster key sets back in as the next
-    call's `view_keys`. Leave `view_keys` unset to disable this gating.
+    `view_keys[i]` restricts the border-overlap and spatial rules to only fire
+    between grid-adjacent views (4-connected on the sweep's theta/phi grid,
+    wrapping at the 360/0 seam via `n_theta`) - i.e. actually neighboring pieces
+    of the sweep, not any two views that happen to share a bit of nearby ground.
+    Each entry is normally a single `(theta_idx, phi_idx)` tuple (one raw mask
+    came from exactly one view); it may also be a set of such tuples, which is
+    what lets this same function run a second "merge the merges" pass: call it
+    once, take `return_view_keys=True`'s per-cluster key sets (each cluster's
+    combined view footprint) as the *next* call's `view_keys`, and clusters whose
+    footprints are adjacent - even if no single original view pair was - become
+    eligible to merge further. Leave `view_keys` unset to disable this gating
+    (every pair is eligible, as before).
     """
     if not index_arrays:
         return ([], [], []) if return_view_keys else []

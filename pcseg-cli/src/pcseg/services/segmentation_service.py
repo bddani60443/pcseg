@@ -2,16 +2,25 @@ from __future__ import annotations
 
 import logging
 import os
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
 
 from pcseg.core.colors import generate_label_color
-from pcseg.core.mask_filters import _filter_outliers_core, _to_points_3d, filter_mask_outliers
+from pcseg.core.mask_filters import (
+    _filter_outliers_core,
+    _to_points_3d,
+    filter_mask_outliers,
+)
 from pcseg.core.merge import merge_by_3d_iou_iterative
-from pcseg.core.projection import Channel, get_face_projection_map, real_point_mask, reconstruct_panorama_for_channel
+from pcseg.core.projection import (
+    Channel,
+    get_face_projection_map,
+    real_point_mask,
+    reconstruct_panorama_for_channel,
+)
 from pcseg.core.scan_node import ScanNode
 from pcseg.exceptions import SweepCancelled
 from pcseg.services.dino_service import DinoService
@@ -213,18 +222,15 @@ class SegmentationService:
         (`merge_iou`) never fires for a same-object pair where one view saw it
         near-complete and another only a sliver at its crop edge, since the
         union balloons relative to the intersection. NOT YET VALIDATED against a
-        real scan (see TODO.md) - the default is a first guess, not tuned.
+        real scan - the default is a first guess, not tuned.
 
         Independently of `merge_duplicates`, every instance is always run through
         `filter_mask_outliers` (see core.mask_filters) before it's returned - each
         instance against only its own points, never the whole scan, so a mask
         that leaked onto a spatially disjoint surface (e.g. SAM2 bleeding from a
         window onto the wall behind it) gets trimmed back down regardless of
-        whether merging is on. This is a targeted, always-on cleanup of each raw
-        detection's own points, not the general-purpose `--filter` mechanism (see
-        TODO.md - that one's scoped for removal for a different reason). Runs
-        before merging specifically so a leaked mask can't skew a merge's 3D-IoU
-        overlap calculation either.
+        whether merging is on. Runs before merging specifically so a leaked mask
+        can't skew a merge's 3D-IoU overlap calculation either.
 
         `refine_detections`, off by default, changes the coarse sweep above into
         a DINO-ONLY box-finding pass (see `_detect_boxes_view`) - SAM2 never
@@ -246,6 +252,24 @@ class SegmentationService:
         real object gets re-segmented from a better-centered/zoomed view
         anyway, so running SAM2 at all in the coarse pass is pure waste once
         refine is on - one DINO+SAM2 call per real object, not two.
+
+        With `merge_duplicates` ALSO on, the coarse boxes are pre-merged (by
+        angular IoU, same label - see `_merge_detected_boxes`) BEFORE this
+        refine pass runs, not just its resulting instances afterward. Without
+        this, "one DINO+SAM2 call per real object" above isn't actually true
+        whenever `--overlap` (the whole point of which is to guarantee an
+        object never falls entirely outside every view - see
+        `compute_coverage_grid`) causes 2+ neighboring views to each find
+        their own coarse box for the SAME real object: every one of those
+        redundant boxes would otherwise get its own full, expensive refine
+        call, only to be merged together AFTER the fact by the post-refine
+        `merge_duplicates` pass below - paying SAM2's cost on duplicates just
+        to throw the extras away. Merging first means refine runs once per
+        real object, not once per (object x overlapping view) pair. The
+        post-refine merge still runs too (on the REFINED instances' real 3D
+        point overlap) - this pre-merge is a performance optimization on top
+        of it, never a substitute: an imperfect angular pre-merge still gets
+        cleaned up correctly by the real, precise 3D merge afterward.
 
         `refine_box_threshold` is `box_threshold`'s own counterpart for JUST the
         refine pass's DINO calls (`text_threshold`/`sam_score_threshold` stay
@@ -342,14 +366,11 @@ class SegmentationService:
 
         if refine_detections:
             before = len(pending_boxes)
-            # max_fov here is always this call's own BASE `fov`, even for a
-            # box that actually came from a multiscale far/near pass view at
-            # a different fov (see view_grid's own docstring) - _DetectedBox
-            # doesn't track which view produced it, so this is a deliberate
-            # simplification: worst case a refine view ends up no tighter
-            # than that specific view's own (larger) fov would have allowed,
-            # never an incorrect action (see _refine_boxes: every box still
-            # gets a real, better-centered SAM2 pass regardless).
+            if merge_duplicates and pending_boxes:
+                pending_boxes = _merge_detected_boxes(pending_boxes, merge_iou, merge_overlap)
+                logging.info(f"Pre-refine merge: {before} coarse box(es) -> {len(pending_boxes)} "
+                             f"candidate(s) (deduped across overlapping sweep views).")
+
             result.instances = self._refine_boxes(
                 node, pending_boxes, dino_panorama, sam_panorama, dino_channel, sam_channel,
                 h, w, out_size, prompt, refine_box_threshold, text_threshold, sam_score_threshold, real_mask,
@@ -357,7 +378,8 @@ class SegmentationService:
                 max_box_area_fraction=max_box_area_fraction, debug_dir=refine_debug_dir,
                 progress_callback=progress_callback, cancel_check=cancel_check,
             )
-            logging.info(f"Refine pass: {before} candidate box(es) -> {len(result.instances)} instance(s).")
+            logging.info(f"Refine pass: {len(pending_boxes)} candidate box(es) -> {len(result.instances)} instance(s) "
+                         f"({before} raw coarse box(es) before merge).")
         elif result.instances:
             before_points = sum(len(inst.indices) for inst in result.instances)
             result.instances = _filter_instance_outliers(node, result.instances)
@@ -603,6 +625,135 @@ def _box_angular_extent(map_x: np.ndarray, map_y: np.ndarray, box, h: int, w: in
     return float(theta_pts.min()), float(theta_pts.max()), float(phi_pts.min()), float(phi_pts.max())
 
 
+def _unwrap_theta_range(theta_lo: float, theta_hi: float, reference_theta: float) -> tuple[float, float]:
+    """
+    Shifts (theta_lo, theta_hi) by a multiple of 360 degrees so theta_lo lands
+    as close as possible to `reference_theta`, preserving the pair's own width
+    - the same unwrap trick `_box_angular_extent` already uses internally
+    (there, relative to a box's own first sample; here, relative to whatever
+    OTHER box/cluster it's being compared against). Lets two _DetectedBox
+    entries from opposite sides of the 0/360 seam (e.g. one stored as
+    theta=[170, 190], the physically-identical other as theta=[-190, -170])
+    compare and merge correctly, as if the seam didn't exist.
+    """
+    width = theta_hi - theta_lo
+    shifted_lo = reference_theta + (((theta_lo - reference_theta + 180.0) % 360.0) - 180.0)
+    return shifted_lo, shifted_lo + width
+
+
+def _detected_box_area(theta_lo: float, theta_hi: float, phi_lo: float, phi_hi: float) -> float:
+    return max(0.0, theta_hi - theta_lo) * max(0.0, phi_hi - phi_lo)
+
+
+def _merge_detected_boxes(
+    boxes: list[_DetectedBox], iou_threshold: float, overlap_coeff_threshold: float | None,
+) -> list[_DetectedBox]:
+    """
+    Deduplicates coarse-pass `_DetectedBox` candidates BEFORE `_refine_boxes`
+    pays for a full DINO+SAM2 call on each one - see `run_sweep`'s own
+    `refine_detections` docstring for why the coarse pass routinely finds the
+    SAME real object once per sweep view that overlaps it (the entire point
+    of `--overlap`), and why merging only the REFINED instances afterward
+    (the plain `merge_duplicates` pass) still means paying SAM2's cost on
+    every redundant coarse box first.
+
+    Grouped by label first (a "tree" box never merges into a "building" box -
+    same reasoning as `_merge_duplicate_instances`). Within a label, two boxes
+    merge once the IoU of their (theta, phi) angular rectangles reaches
+    `iou_threshold`, comparing in a shared local frame via
+    `_unwrap_theta_range` so a real object straddling the 0/360 seam still
+    merges correctly. `overlap_coeff_threshold`, mirroring
+    `core.merge.merge_by_3d_iou`'s own parameter of the same name, adds a
+    looser rule on top: merges once the SMALLER box is that fraction covered
+    by the bigger one, regardless of size mismatch - the same "one view saw
+    it near-complete, another only a sliver at its own crop edge" case that
+    parameter already handles for the post-refine 3D merge, just applied here
+    to the cheap angular boxes instead.
+
+    A merged box's own extent is the UNION bounding rectangle of every box
+    that went into it - deliberately the most INCLUSIVE candidate, since
+    `_refine_boxes` will re-view and re-detect it for real anyway (see
+    `refine_margin`/`refine_min_fov`); better to hand refine a slightly wider
+    ROI than to risk clipping part of the real object because a tighter
+    intersection was used instead. Score is the max of its contributors' -
+    only used for logging here, since the refine pass's own new DINO call
+    produces the real, final score regardless of which coarse box seeded it.
+
+    Single greedy pass (not iterative like `merge_by_3d_iou_iterative`) -
+    unlike the post-refine 3D merge, an imperfect/under-merged result here
+    costs only a few extra (still cheap-relative-to-SAM2, but not free) refine
+    calls, never a wrong final result: the real, precise 3D `merge_duplicates`
+    pass still runs on the REFINED instances afterward regardless.
+    """
+    if not boxes:
+        return []
+
+    by_label: dict[str, list[_DetectedBox]] = {}
+    for box in boxes:
+        by_label.setdefault(box.label, []).append(box)
+
+    merged: list[_DetectedBox] = []
+    for group in by_label.values():
+        merged.extend(_merge_boxes_same_label(group, iou_threshold, overlap_coeff_threshold))
+    return merged
+
+
+def _merge_boxes_same_label(
+    group: list[_DetectedBox], iou_threshold: float, overlap_coeff_threshold: float | None,
+) -> list[_DetectedBox]:
+    order = sorted(
+        range(len(group)),
+        key=lambda i: _detected_box_area(group[i].theta_lo, group[i].theta_hi, group[i].phi_lo, group[i].phi_hi),
+        reverse=True,
+    )
+    clusters: list[_DetectedBox] = []
+
+    for i in order:
+        cand = group[i]
+        best_idx, best_score = None, 0.0
+
+        for ci, cluster in enumerate(clusters):
+            t_lo, t_hi = _unwrap_theta_range(cand.theta_lo, cand.theta_hi, cluster.theta_lo)
+            inter_t = max(0.0, min(t_hi, cluster.theta_hi) - max(t_lo, cluster.theta_lo))
+            inter_p = max(0.0, min(cand.phi_hi, cluster.phi_hi) - max(cand.phi_lo, cluster.phi_lo))
+            intersection = inter_t * inter_p
+            if intersection <= 0:
+                continue
+
+            cand_area = _detected_box_area(t_lo, t_hi, cand.phi_lo, cand.phi_hi)
+            cluster_area = _detected_box_area(cluster.theta_lo, cluster.theta_hi, cluster.phi_lo, cluster.phi_hi)
+            union = cand_area + cluster_area - intersection
+
+            score = None
+            iou = intersection / union if union > 0 else 0.0
+            if iou >= iou_threshold:
+                score = iou
+            if overlap_coeff_threshold is not None and min(cand_area, cluster_area) > 0:
+                overlap_coeff = intersection / min(cand_area, cluster_area)
+                if overlap_coeff >= overlap_coeff_threshold and (score is None or overlap_coeff > score):
+                    score = overlap_coeff
+
+            if score is not None and score > best_score:
+                best_score = score
+                best_idx = ci
+
+        if best_idx is not None:
+            cluster = clusters[best_idx]
+            t_lo, t_hi = _unwrap_theta_range(cand.theta_lo, cand.theta_hi, cluster.theta_lo)
+            clusters[best_idx] = _DetectedBox(
+                theta_lo=min(cluster.theta_lo, t_lo),
+                theta_hi=max(cluster.theta_hi, t_hi),
+                phi_lo=min(cluster.phi_lo, cand.phi_lo),
+                phi_hi=max(cluster.phi_hi, cand.phi_hi),
+                label=cluster.label,
+                score=max(cluster.score, cand.score),
+            )
+        else:
+            clusters.append(cand)
+
+    return clusters
+
+
 def _save_debug_view(
     image: np.ndarray, channel: Channel, boxes: list, labels: list[str], scores: list[float],
     masks: list[np.ndarray], colors: list[tuple], out_dir: str, name: str | None,
@@ -648,8 +799,8 @@ def _save_debug_view(
     cv2.imwrite(os.path.join(out_dir, file_name), canvas)
 
 
-_OUTLIER_MP_MIN_POINTS = 5_000  # below this, an instance runs inline - pool/IPC overhead isn't worth it
-_OUTLIER_MP_MIN_INSTANCES = 2   # only spin up a pool if there's more than one big-enough instance to split across it
+_OUTLIER_PARALLEL_MIN_POINTS = 5_000  # below this, an instance runs inline - not worth a pool task
+_OUTLIER_PARALLEL_MIN_INSTANCES = 2   # only spin up a pool if there's more than one big-enough instance to split across it
 
 
 def _filter_instance_outliers(node: ScanNode, instances: list[DetectedInstance]) -> list[DetectedInstance]:
@@ -673,31 +824,34 @@ def _filter_instance_outliers(node: ScanNode, instances: list[DetectedInstance])
 def _run_outlier_filtering(node: ScanNode, instances: list[DetectedInstance]) -> list[np.ndarray]:
     """
     Filters every instance (see filter_mask_outliers), returned in the SAME
-    order as `instances`. Instances at or above `_OUTLIER_MP_MIN_POINTS` run
-    in a ProcessPoolExecutor, in parallel across CPU cores - the actual
-    filter (core.mask_filters._filter_outliers_core) has no ScanNode
-    dependency at all (see its own docstring), so only each instance's own
-    already-extracted points_3d/indices pair has to cross the process
-    boundary, never the whole (potentially huge) scan. That matters
-    specifically on Windows, where multiprocessing always starts each worker
-    as a fresh interpreter (spawn, not fork) rather than a cheap
-    copy-on-write fork - re-pickling a large ScanNode per task there would
-    likely cost more than the parallelism saves. Smaller instances run
-    inline, serially, regardless - not worth a worker round-trip.
+    order as `instances`. Instances at or above `_OUTLIER_PARALLEL_MIN_POINTS`
+    run in a ThreadPoolExecutor, in parallel across CPU cores: the heavy
+    loops of the filter (core.mask_filters._filter_outliers_core - NumPy,
+    SciPy's KD-tree and connected components, scikit-learn's LOF) release
+    the GIL, so threads give the same speed-up processes did (measured on
+    four synthetic surface instances, ~1.1M points: 3.3 s serial, 2.1 s with
+    4 threads, 2.2 s with 4 spawned processes). Threads rather than processes
+    on purpose: forking this multi-threaded process (torch's thread pools; the
+    desktop viewer runs every sweep on a QThread) can deadlock a child on a
+    lock another thread held at fork time, and "spawn" re-imports the
+    caller's main script in every worker - which re-runs a whole script that
+    lacks an `if __name__ == "__main__":` guard, scan loading and models
+    included, once per worker (seen live: 20 worker copies of a GUI script
+    exhausted the machine's memory). Smaller instances run inline, serially,
+    regardless - not worth a pool task.
 
     Falls back to filtering EVERYTHING inline/serially (discarding any
-    partial pool results) if the pool itself raises for any reason (e.g. a
-    sandboxed environment with no process-spawn permission) - an
+    partial pool results) if the pool itself raises for any reason - an
     optimization failing shouldn't fail the whole sweep.
     """
     results: list[np.ndarray | None] = [None] * len(instances)
-    big_positions = [i for i, inst in enumerate(instances) if len(inst.indices) >= _OUTLIER_MP_MIN_POINTS]
+    big_positions = [i for i, inst in enumerate(instances) if len(inst.indices) >= _OUTLIER_PARALLEL_MIN_POINTS]
 
-    if len(big_positions) >= _OUTLIER_MP_MIN_INSTANCES:
+    if len(big_positions) >= _OUTLIER_PARALLEL_MIN_INSTANCES:
         try:
             points_by_pos = {i: _to_points_3d(node, instances[i].indices) for i in big_positions}
             max_workers = min(len(big_positions), os.cpu_count() or 1)
-            with ProcessPoolExecutor(max_workers=max_workers) as pool:
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
                 futures = {
                     pool.submit(_filter_outliers_core, points_by_pos[i], instances[i].indices): i
                     for i in big_positions

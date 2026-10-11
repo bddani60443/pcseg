@@ -1,7 +1,8 @@
 """
-pcseg-view - minimal 3D viewer/screenshot tool for pcseg point clouds and
-segmentation results. This is a working tool for producing figures, not a
-citable research artifact.
+pcseg-view - the optional desktop viewer of pcseg: shows a scan or a pcseg
+result in 3D and runs pcseg's segmentation interactively against it, in
+process. Installed with the `gui` extra (pip install -e ".[gui]"); see
+docs/gui.md.
 
 Usage:
     pcseg-view [path-to-scan.e57-or-result.las] [--decimation N]
@@ -13,6 +14,7 @@ import logging
 import platform
 import sys
 
+from PyQt6 import sip
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QSurfaceFormat
 from PyQt6.QtWidgets import QApplication
@@ -87,7 +89,14 @@ def main(argv: list[str] | None = None) -> int:
         window.open_file(args.path, decimation=args.decimation)
         window._last_decimation = args.decimation
 
-    return app.exec()
+    exit_code = app.exec()
+    # Destroy the window (and its OpenGL widgets) explicitly while the
+    # QApplication still exists. Leaving both locals to go out of scope
+    # together at return lets CPython's frame cleanup pick their order, and
+    # whenever the QApplication went first the process segfaulted on exit
+    # (intermittently - seen in about one of four quits).
+    sip.delete(window)
+    return exit_code
 
 
 if __name__ == "__main__":

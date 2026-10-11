@@ -9,7 +9,12 @@ import numpy as np
 
 from pcseg.core.colors import generate_label_color
 from pcseg.core.merge import mask_touches_border, merge_by_3d_iou_iterative
-from pcseg.core.projection import Channel, get_face_projection_map, real_point_mask, reconstruct_panorama_for_channel
+from pcseg.core.projection import (
+    Channel,
+    get_face_projection_map,
+    real_point_mask,
+    reconstruct_panorama_for_channel,
+)
 from pcseg.core.scan_node import ScanNode
 from pcseg.exceptions import SweepCancelled
 

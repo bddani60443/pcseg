@@ -22,13 +22,19 @@ _root: Path | None = None
 
 
 def project_root() -> Path:
-    """The pcseg-cli project root (where scripts/ and external/ live) - derived
-    from the lightweight `pcseg` package itself (src/pcseg/__init__.py, no heavy
-    imports), NOT from dino_service.py/sam_service.py - see module docstring."""
+    """The pcseg-cli project root (where scripts/ and external/ live), found
+    the same way the CLI's own model services find it (pcseg.paths.
+    find_project_root: the source tree of an editable install, else the
+    current directory or its sibling pcseg-cli/) - so the viewer and the CLI
+    always agree on where the downloaded weights are. Anchored on the empty
+    `pcseg.services` package, not dino_service.py/sam_service.py - see module
+    docstring."""
     global _root
     if _root is None:
-        import pcseg
-        _root = Path(pcseg.__file__).resolve().parents[2]  # .../pcseg-cli/src/pcseg/__init__.py -> pcseg-cli
+        from pcseg.paths import find_project_root
+
+        import pcseg.services
+        _root = find_project_root("scripts/install_segmentation_backends.sh", pcseg.services.__file__)
     return _root
 
 
@@ -80,6 +86,16 @@ def install_script_path() -> Path:
 
 
 def _windows_powershell_executable() -> str:
+    """Prefers `pwsh` (PowerShell 7+) if it's actually on PATH, falling back
+    to `powershell` (Windows PowerShell 5.1, built into every Windows install
+    since Vista/7 - unlike `pwsh`, which is a separate, optional install).
+    Real crash live: a machine without PowerShell 7 raised a bare
+    FileNotFoundError ([WinError 2], from deep inside subprocess.Popen) the
+    moment the install script tried to run at all, since `pwsh` was hardcoded
+    with no fallback. install_segmentation_backends.ps1's own header already
+    notes it's written against plain PS 5.1-compatible syntax specifically so
+    this fallback is safe (confirmed: no PS7-only operators - ternary `?:`,
+    null-coalescing `??`, pipeline chains `&&`/`||` - anywhere in it)."""
     for candidate in ("pwsh", "powershell"):
         if shutil.which(candidate):
             return candidate

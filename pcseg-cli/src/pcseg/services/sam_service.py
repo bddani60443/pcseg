@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 from pathlib import Path
 
@@ -31,6 +32,24 @@ class SamService:
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.config_path = config_path
         self.checkpoint_path = checkpoint_path
+
+    def _autocast(self):
+        """
+        bfloat16 autocast, CUDA only - matches _ensure_loaded's own CUDA-only
+        `.to(dtype=torch.bfloat16)` model conversion, so inference never runs in
+        a dtype the model's own weights weren't actually moved to. Real measured
+        regression: on a CPU with no native bf16 execution units (confirmed via
+        `torch.backends.cpu.get_cpu_capability()` == "AVX2", no AVX512-BF16/AMX -
+        common on a laptop CPU), torch still HONORS a CPU autocast(dtype=bfloat16)
+        request by emulating it elementwise rather than refusing it, which measured
+        ~17x SLOWER than plain fp32 on the same SAM2 predict() call (61s vs 3.5s) -
+        not a rounding-error-sized cost, a full pipeline stall. nullcontext on CPU
+        runs inference at the model's actual (fp32) dtype, same as before autocast
+        was ever added here.
+        """
+        if self.device == "cuda":
+            return torch.autocast(device_type=self.device, dtype=torch.bfloat16)
+        return contextlib.nullcontext()
 
     def _ensure_loaded(self) -> None:
         if self.predictor is not None:
@@ -76,7 +95,7 @@ class SamService:
         if box is not None:
             box = np.atleast_2d(np.asarray(box))
 
-        with torch.inference_mode(), torch.autocast(device_type=self.device, dtype=torch.bfloat16):
+        with torch.inference_mode(), self._autocast():
             self.predictor.set_image(img)
             masks, scores, logits = self.predictor.predict(
                 point_coords=point_coords, point_labels=point_labels, box=box, multimask_output=multimask_output,
@@ -109,7 +128,7 @@ class SamService:
             )
             self._auto_generator_params = params
 
-        with torch.inference_mode(), torch.autocast(device_type=self.device, dtype=torch.bfloat16):
+        with torch.inference_mode(), self._autocast():
             masks_dicts = self.auto_generator.generate(image_rgb)
 
         return [m["segmentation"].astype(bool) for m in masks_dicts]

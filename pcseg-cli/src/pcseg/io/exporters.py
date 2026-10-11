@@ -8,7 +8,7 @@ import cv2
 import laspy
 import numpy as np
 
-from pcseg.core.projection import Channel, coverage_tile_boundary, reconstruct_panorama_for_channel
+from pcseg.core.projection import Channel, reconstruct_panorama_for_channel
 from pcseg.core.scan_node import ScanNode
 
 
@@ -91,7 +91,7 @@ def export_to_e57(node: ScanNode, output_filepath: str, mask: np.ndarray | None 
         progress_callback(5, "Preparing E57 export...")
 
     mapper = node.index_mapper
-    h, w = mapper.h, mapper.w
+    h = mapper.h
 
     visible_mask = ~node.hidden_mask if node.hidden_mask is not None else np.ones(node.point_count, dtype=bool)
 
@@ -160,43 +160,6 @@ def export_to_e57(node: ScanNode, output_filepath: str, mask: np.ndarray | None 
     if progress_callback:
         progress_callback(100, "E57 export complete!")
     return f"Saved structured E57 ({n_exported:,} points) to {os.path.basename(output_filepath)}"
-
-
-def export_coverage_grid_preview(node: ScanNode, output_filepath: str, grid: list[tuple[float, float]],
-                                  fov: float = 90.0, base_channel: Channel | None = None) -> str:
-    """
-    Draws every (theta, phi) tile in a coverage grid (see
-    core.projection.compute_coverage_grid) as an outline on the reconstructed
-    panorama, so you can see exactly where a sweep would render a view crop
-    from before actually running DINO/SAM2 on any of them.
-    """
-    from pcseg.core.projection import default_channel, pad_img
-
-    channel = base_channel or default_channel(node)
-    panorama = reconstruct_panorama_for_channel(node, channel, pad=False)
-    if panorama is None:
-        raise ValueError(f"Could not reconstruct panorama for channel {channel!r}.")
-
-    h, w = panorama.shape[:2]
-    overlay = panorama.copy()
-    rng = np.random.default_rng(0)
-
-    for theta, phi in grid:
-        color = tuple(int(c) for c in rng.integers(80, 255, size=3))
-        boundary = coverage_tile_boundary(h, w, theta, phi, fov)
-        # A tile whose footprint straddles the panorama's left/right seam produces
-        # boundary points that jump from one edge to the other in pixel space - draw
-        # it as separate segments instead of one polyline connecting across the gap.
-        x = boundary[:, 0]
-        wrap_at = np.where(np.abs(np.diff(x)) > w / 2)[0] + 1
-        for segment in np.split(boundary, wrap_at):
-            if len(segment) >= 2:
-                cv2.polylines(overlay, [segment.astype(np.int32)], isClosed=False, color=color, thickness=2)
-
-    overlay_bgr = cv2.cvtColor(pad_img(overlay, fill_value=0), cv2.COLOR_RGB2BGR)
-    cv2.imwrite(output_filepath, overlay_bgr)
-    logging.info(f"Coverage grid preview saved: {output_filepath}")
-    return f"Saved coverage grid preview ({len(grid)} tiles) to {os.path.basename(output_filepath)}"
 
 
 def export_mask_preview_image(node: ScanNode, output_filepath: str, indices_by_label: dict[str, np.ndarray],

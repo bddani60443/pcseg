@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal, Optional
+from typing import Optional
 
 import numpy as np
 from numpy.typing import NDArray
@@ -35,8 +35,6 @@ class ScanNode:
 
     hidden_mask: NDArray[np.bool_]
     index_mapper: IndexMapper
-
-    fill_holes: bool = False
 
     # Populated later by the segmentation pipeline (optional). Wide dtype since
     # auto-segmentation can propose more objects than an 8-bit id would hold;

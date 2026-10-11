@@ -1,8 +1,7 @@
 """
 Density-adaptive rendering decimation.
 
-Self-contained on purpose, same "trivial to rip out" design as
-frustum_culling.py: pure numpy, ShaderPointCloudItem only touches it through
+Self-contained on purpose: pure numpy, ShaderPointCloudItem only touches it through
 _upload_ebo() (one call site, replacing the old uniform `visible[::step]`
 stride-slice), gated by the exact same `view_decimation` control that's
 always been there - the UI knob and its meaning ("how aggressively to

@@ -1,27 +1,3 @@
-"""
-AutoCAD/Blender/SolidWorks-style corner "ViewCube" navigation aid: a small
-6-face cube overlay, top-right corner of the 3D view, that always shows the
-SAME rotation as the main camera (built from the exact same
-azimuth/elevation this app's camera already uses - see PickableGLView/
-pyqtgraph.opengl.GLViewWidget.viewMatrix()/cameraPosition()) and whose faces
-can be clicked to snap the main camera to a standard orthogonal view.
-
-No pre-existing rotation-sync mechanism to reuse: the "axis rotates like the
-scan" the user referred to (viewer_widget.py's `self.axis_item =
-GLAxisItem()`) is just a normal object placed IN the main 3D scene at the
-origin - it "rotates" only because it's swept along with everything else by
-the same camera, not because of any separate sync code. This module builds
-that sync deliberately, once, for a small SEPARATE corner viewport.
-
-Deliberately 6-face only (no edge/corner clicking) - see viewer_widget.py's
-ViewCube integration comment for why that's a scoped-out stretch goal, not an
-oversight.
-
-All the geometry/hit-testing math here is pure (no GL calls, no Qt widget
-dependency beyond QMatrix4x4/QVector4D) so it's directly unit-testable without
-a real GL context - see tests exercising face_snap_target/ray_cube_intersect/
-screen_point_to_ray directly.
-"""
 from __future__ import annotations
 
 from math import atan2, degrees

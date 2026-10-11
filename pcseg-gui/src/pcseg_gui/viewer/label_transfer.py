@@ -9,8 +9,8 @@ against the NEW point set - there is no valid index-based carryover here, by
 construction (unlike project_file.py's project-reopen case, which always
 reloads at the EXACT SAME decimation the indices were saved against).
 
-Self-contained on purpose (pure numpy, same "trivial to rip out" design as
-frustum_culling.py/density_decimation.py) - the technique is a voxel-grid
+Self-contained on purpose (pure numpy, same design as density_decimation.py)
+- the technique is a voxel-grid
 SPATIAL label transfer, reusing density_decimation.py's own voxel-hashing
 (pack_voxel_ids): bin the OLD classified points into voxels, remembering
 which instance "owns" each occupied voxel (smaller instances win ties over

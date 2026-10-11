@@ -10,16 +10,17 @@ from __future__ import annotations
 
 import ctypes
 import logging
-import time
 from typing import Literal
 
 import numpy as np
 import OpenGL.GL as gl
 from OpenGL.GL import shaders
-from OpenGL.raw.GL.VERSION.GL_2_0 import glVertexAttribPointer as raw_glVertexAttribPointer
+from OpenGL.raw.GL.VERSION.GL_2_0 import (
+    glVertexAttribPointer as raw_glVertexAttribPointer,
+)
+from pcseg.core.scan_node import ScanNode
 from pyqtgraph.opengl.GLGraphicsItem import GLGraphicsItem
 
-from pcseg.core.scan_node import ScanNode
 from pcseg_gui.viewer import density_decimation
 
 VERTEX_SHADER = """
@@ -233,18 +234,6 @@ void main() {
 RENDER_MODES = ["Solid", "Transparent", "Clipped"]
 COLOR_MODES: tuple[str, ...] = ("rgb", "intensity", "normals")
 
-# Minimum time between real frustum-culling recomputes while the camera is
-# actively changing (e.g. an orbit-drag firing a mouseMoveEvent - and
-# GLViewWidget.orbit()/.update() - on every single move, with no throttling
-# of its own). See _refresh_frustum_culling_if_needed's own docstring for why
-# this exists: confirmed live that without it, every paint() during a drag
-# re-ran the full cell test AND re-uploaded the EBO (~15ms/frame on the real
-# dataset in this sandbox alone - ~90% of a 60fps frame budget on culling
-# housekeeping before any actual rendering, and real hardware's glBufferData
-# cost isn't even reflected in that number), which is plausibly why real-
-# hardware feedback reported culling making the view feel SLOWER, not faster.
-_CULL_RECOMPUTE_THROTTLE_S = 0.15
-
 
 class _OutlineGroup:
     """Per-outline-group GL state - one instance for the current selection,
@@ -279,7 +268,7 @@ class ShaderPointCloudItem(GLGraphicsItem):
         # ever changes what gets uploaded to the EBO below, never node's own data.
         # Density-adaptive, not a uniform stride (see density_decimation.py) - a
         # keep-mask over ALL points, cached and only recomputed when THIS VALUE
-        # itself changes (_ensure_decimation_mask), never on a ROI/frustum-
+        # itself changes (_ensure_decimation_mask), never on a ROI-
         # triggered _upload_ebo() call - live-measured at ~9s on a real 58M-point
         # load, far too slow to redo on anything but a deliberate "View detail"
         # change.
@@ -295,17 +284,6 @@ class ShaderPointCloudItem(GLGraphicsItem):
         self.phi_range: tuple[float, float] | None = None
         self._point_theta: np.ndarray | None = None
         self._point_phi: np.ndarray | None = None
-
-        # Additive, isolated frustum-culling filter - see frustum_culling.py's
-        # own module docstring. Everything culling-specific lives behind this
-        # one flag: off (the default - a v1/experimental feature), it never
-        # runs at all and _upload_ebo() behaves exactly as it did before this
-        # existed. set_frustum_culling() is the single point of control.
-        self.frustum_culling_enabled: bool = False
-        self._spatial_grid = None  # frustum_culling.SpatialGrid | None, built lazily on first enable
-        self._frustum_point_mask: np.ndarray | None = None
-        self._last_culled_mvp_key: tuple | None = None
-        self._last_cull_recompute_time: float = 0.0
 
         self.shader_program: int | None = None
         self.selection_program: int | None = None
@@ -350,6 +328,36 @@ class ShaderPointCloudItem(GLGraphicsItem):
         self.outline_enabled: bool = True
 
     def initializeGL(self) -> None:
+        # Idempotency guard: load_node() calls this explicitly (eagerly, so
+        # vbo_col etc. are ready before load_node() returns - see its own
+        # comment) AND THEN calls gl_view.addItem(self.point_item), whose
+        # pyqtgraph internals (GLViewWidget.addItem -> item.initialize())
+        # unconditionally call initializeGL() a SECOND time on the very same
+        # instance once the view is isValid() - which it usually already is,
+        # since a big scan's background load leaves plenty of time for the
+        # widget to paint at least once first. That second call used to
+        # crash outright (it runs AFTER load_node()'s own doneCurrent(), so
+        # there's no current GL context at all - even _drain_gl_errors()'s
+        # own glGetError() raised GL_INVALID_OPERATION) and, even on a
+        # driver where it happened not to crash, would silently leak the
+        # first call's shader programs/VBOs by overwriting their handles.
+        # Real work only ever needs to happen once per instance.
+        if self.shader_program is not None:
+            return
+
+        # Real reported crash: GL_INVALID_OPERATION on glCreateShader here,
+        # right after a scan reload (a new ShaderPointCloudItem's very first
+        # paint - see load_node) - shaders.compileShader is a CHECKED call
+        # (calls glGetError() internally), so it inherited and misreported a
+        # STALE error left over from something EARLIER on the shared
+        # context, most likely the just-cleaned-up PREVIOUS point_item's own
+        # cleanup() (its glDelete* calls weren't drained either - see the
+        # matching fix there) - same "a pending error blames whatever
+        # CHECKED call happens to run next" class of bug _drain_gl_errors'
+        # own docstring already documents for the outline pass below.
+        # Draining here too means THIS shader compile always starts from a
+        # genuinely clean error state, regardless of what ran before it.
+        self._drain_gl_errors()
         try:
             vs = shaders.compileShader(VERTEX_SHADER, gl.GL_VERTEX_SHADER)
             fs = shaders.compileShader(FRAGMENT_SHADER, gl.GL_FRAGMENT_SHADER)
@@ -419,20 +427,14 @@ class ShaderPointCloudItem(GLGraphicsItem):
 
     def _upload_ebo(self) -> None:
         """(Re)builds the element buffer from node.hidden_mask, cropped by the
-        angular ROI (if any), frustum-culled (if enabled), and subsampled by
-        view_decimation, in that order. Must run with a current GL context -
-        initializeGL() calls it once at setup, set_view_decimation()/
-        set_angular_roi()/set_frustum_culling() call it again live, and
-        paint() calls it whenever frustum culling is on and the camera moved."""
+        angular ROI (if any), and subsampled by view_decimation, in that
+        order. Must run with a current GL context - initializeGL() calls it
+        once at setup, set_view_decimation()/set_angular_roi()/
+        set_hidden_mask() call it again live."""
         visible = np.where(~self.node.hidden_mask)[0].astype(np.uint32)
         if self.theta_range is not None or self.phi_range is not None:
             angular = self._angular_mask()
             visible = visible[angular[visible]]
-        # Frustum culling - additive filter, see frustum_culling.py. Removable by
-        # deleting this block plus set_frustum_culling()/_refresh_frustum_culling_
-        # if_needed()/_ensure_spatial_grid() and the __init__ fields above.
-        if self.frustum_culling_enabled and self._frustum_point_mask is not None:
-            visible = visible[self._frustum_point_mask[visible]]
         if self.view_decimation > 1:
             self._ensure_decimation_mask()
             if self._decimation_keep_mask is not None:
@@ -445,11 +447,11 @@ class ShaderPointCloudItem(GLGraphicsItem):
     def _ensure_decimation_mask(self) -> None:
         """Density-adaptive keep-mask over ALL points (see density_decimation.py),
         cached and recomputed ONLY when view_decimation's own value changed since
-        the last call - NOT on every _upload_ebo() (ROI toggles and frustum-
-        culling recomputes call that far more often than the user actually
-        changes "View detail", and this is expensive: ~9s measured on a real
+        the last call - NOT on every _upload_ebo() (ROI and hidden-point
+        changes call that far more often than the user actually changes
+        "View detail", and this is expensive: ~9s measured on a real
         58M-point load). Computed globally (not restricted to whatever's
-        currently ROI/frustum-visible) - simpler and much safer against
+        currently ROI-visible) - simpler and much safer against
         exactly that repeated-recompute risk, at the minor cost of the kept
         fraction being exact overall rather than exactly 1/step within an
         arbitrarily small ROI crop specifically."""
@@ -567,119 +569,20 @@ class ShaderPointCloudItem(GLGraphicsItem):
 
     def set_hidden_mask(self, mask: np.ndarray) -> None:
         """Replaces node.hidden_mask (a boolean array, True = never rendered
-        at all, regardless of view_decimation/ROI/frustum culling - see
+        at all, regardless of view_decimation/ROI - see
         _upload_ebo's own read of it) and re-uploads the EBO to match. Used
         for "hide these classified points from the 3D view entirely," not
         just reverting their coloring - see Layer.points_hidden's own
         docstring and Viewer3DWidget._recompute_composition, which computes
         the union of every points_hidden layer's own points and calls this.
-        Same convention as set_view_decimation/set_angular_roi/
-        set_frustum_culling: needs a current GL context, caller handles
-        makeCurrent/doneCurrent."""
+        Same convention as set_view_decimation/set_angular_roi: needs a
+        current GL context, caller handles makeCurrent/doneCurrent."""
         if np.array_equal(mask, self.node.hidden_mask):
             return
         self.node.hidden_mask = mask
         if self.ebo is None:
             return
         self._upload_ebo()
-        self.update()
-
-    # ── Frustum culling (additive, isolated - see frustum_culling.py) ──────
-
-    def _ensure_spatial_grid(self) -> None:
-        if self._spatial_grid is not None:
-            return
-        from pcseg_gui.viewer.frustum_culling import build_spatial_grid
-        pts = self.node.points_quantized.astype(np.float32) * self.node.quant_scale + self.node.quant_center
-        self._spatial_grid = build_spatial_grid(pts)
-
-    def _refresh_frustum_culling_if_needed(self, view_widget, force: bool = False) -> bool:
-        """Recomputes the frustum-culled point mask if the camera's combined
-        view*projection matrix has changed since the last computation (or if
-        `force`) - this IS "on camera change": paint() runs every time the
-        widget repaints, which pyqtgraph's own orbit/pan/zoom/setCameraPosition
-        code already triggers via .update() for every real camera change, so
-        comparing the matrix here needs no separate signal of its own. Returns
-        True if it actually recomputed (caller should then re-upload the EBO).
-
-        Deliberately calls view_widget.projectionMatrix()/viewMatrix() - the
-        functions that COMPUTE the matrices fresh from the current camera opts
-        - rather than currentProjection()/currentModelView(), which only
-        return whatever was last pushed by an ACTIVE paint cycle and raise
-        IndexError on an empty stack otherwise. paint() itself always has a
-        populated stack (GLViewWidget.paint() pushes it before drawItemTree()
-        runs), but set_frustum_culling() can just as easily be invoked from a
-        UI toggle with no paint having happened yet - confirmed live: this
-        crashed with exactly that IndexError before switching to these.
-
-        THROTTLED (unless `force`): pyqtgraph's orbit()/pan() call .update()
-        on every single mouseMoveEvent with no throttling of their own, so a
-        drag can trigger dozens of paint() calls per second, each with a
-        genuinely different camera matrix - confirmed live this made every
-        one of those recompute AND re-upload the EBO, costing far more (real
-        hardware feedback: the view felt SLOWER with culling on) than the
-        vertex-shading time culling saves. If less than
-        _CULL_RECOMPUTE_THROTTLE_S has passed since the last real recompute,
-        this is a no-op: the mask/EBO simply stay exactly as they were, so no
-        recompute AND no glBufferData re-upload happen this frame - never a
-        stale mask silently swapped in as if it were current. The tradeoff
-        (never a correctness violation, only a brief lag in TIGHTENING the
-        culled set while the camera is actively moving fast) is the standard
-        one real-time frustum culling makes; request_frustum_settle() forces
-        one final unthrottled recompute the moment an interactive drag/pan
-        ends (see PickableGLView.mouseReleaseEvent), so a view the user has
-        actually stopped to look at is always fully up to date, never stale."""
-        if view_widget is None:
-            return False
-        region = view_widget.getViewport()
-        mvp = view_widget.projectionMatrix(region, region) * view_widget.viewMatrix()
-        key = tuple(mvp.data())
-        if not force and key == self._last_culled_mvp_key:
-            return False
-        now = time.monotonic()
-        if not force and (now - self._last_cull_recompute_time) < _CULL_RECOMPUTE_THROTTLE_S:
-            return False
-        self._last_culled_mvp_key = key
-        self._last_cull_recompute_time = now
-
-        from pcseg_gui.viewer.frustum_culling import cull_point_indices, extract_frustum_planes
-        self._ensure_spatial_grid()
-        planes = extract_frustum_planes(mvp)
-        visible_idx = cull_point_indices(self._spatial_grid, planes)
-        mask = np.zeros(self.count, dtype=bool)
-        mask[visible_idx] = True
-        self._frustum_point_mask = mask
-        return True
-
-    def request_frustum_settle(self) -> None:
-        """Clears the recompute throttle so the very NEXT
-        _refresh_frustum_culling_if_needed call - even without `force` -
-        performs a real recompute regardless of how recently the last one
-        ran. Meant to be called once an interactive drag/pan/zoom ends (see
-        PickableGLView.mouseReleaseEvent), so the throttle's bounded
-        staleness never lingers once the camera has actually stopped
-        moving - a no-op if frustum culling is off or nothing has changed."""
-        self._last_cull_recompute_time = 0.0
-
-    def set_frustum_culling(self, enabled: bool) -> None:
-        """The single flag flip that turns this feature fully on/off - see
-        frustum_culling.py's module docstring for the "trivial to rip out"
-        design this is meant to preserve. Needs a current GL context (same
-        convention as set_view_decimation/set_angular_roi); caller handles
-        makeCurrent/doneCurrent. Disabling immediately re-uploads the EBO
-        with the mask cleared, restoring the EXACT contents hidden_mask/ROI/
-        view_decimation alone would already produce - provably safe to turn
-        off at any time."""
-        if enabled == self.frustum_culling_enabled:
-            return
-        self.frustum_culling_enabled = enabled
-        if enabled:
-            self._refresh_frustum_culling_if_needed(self.view(), force=True)
-        else:
-            self._frustum_point_mask = None
-            self._last_culled_mvp_key = None
-        if self.ebo is not None:
-            self._upload_ebo()
         self.update()
 
     def _compute_base_color_data(self) -> np.ndarray:
@@ -1140,14 +1043,6 @@ class ShaderPointCloudItem(GLGraphicsItem):
 
         view_widget = self.view()
 
-        # "On camera change" hook for frustum culling: paint() already runs
-        # every time pyqtgraph's orbit/pan/zoom/setCameraPosition code calls
-        # .update() (its own existing repaint trigger), so comparing the VP
-        # matrix here - cheap, and a no-op whenever it hasn't changed - reuses
-        # that instead of adding a separate signal/polling mechanism.
-        if self.frustum_culling_enabled and self._refresh_frustum_culling_if_needed(view_widget):
-            self._upload_ebo()
-
         if view_widget:
             pos = view_widget.cameraPosition()
             gl.glUniform3f(gl.glGetUniformLocation(self.shader_program, "camPos"), pos.x(), pos.y(), pos.z())
@@ -1202,6 +1097,18 @@ class ShaderPointCloudItem(GLGraphicsItem):
         whatever framebuffer is currently bound. The caller is responsible for
         setting up that framebuffer/viewport and reading back the pixel under
         the cursor afterward - see Viewer3DWidget.handle_point_click.
+
+        Real reported crash: this uses the same UNCHECKED raw_glVertexAttribPointer
+        as paint()'s own vertex setup (see _drain_gl_errors' docstring for why that
+        bypasses PyOpenGL's normal per-call error check), but unlike paint() never
+        drained afterward - any error it left queued survived all the way past this
+        call's own caller (_gpu_pick_point_index skips its next checked call,
+        glReadPixels, whenever the pick rectangle clips to zero size at the
+        viewport's edge) and surfaced at a COMPLETELY unrelated later call
+        (glBindBuffer in _reupload_active_colors, via clear_hover_preview) as a
+        misattributed GL_INVALID_ENUM. Draining at the end (below) means this pass
+        can never leak its own error state into whatever runs after it, same fix as
+        paint()'s own trailing _drain_gl_errors().
         """
         if self.selection_program is None:
             return
@@ -1231,6 +1138,7 @@ class ShaderPointCloudItem(GLGraphicsItem):
 
         gl.glDisableVertexAttribArray(pos_loc)
         gl.glUseProgram(0)
+        self._drain_gl_errors()  # unconditional - leave this whole pass clean for whatever runs next
 
     def cleanup(self) -> None:
         buffers = [
@@ -1268,3 +1176,9 @@ class ShaderPointCloudItem(GLGraphicsItem):
         self._outline_selection = _OutlineGroup()
         self._outline_hover = _OutlineGroup()
         self.node = None
+        # Same reasoning as initializeGL()'s own drain - a stray error from
+        # any of this method's own glDelete* calls above must not leak onto
+        # the shared context and get misattributed to whatever GL call runs
+        # next (typically the REPLACEMENT ShaderPointCloudItem's own
+        # initializeGL, called from load_node right after this).
+        self._drain_gl_errors()

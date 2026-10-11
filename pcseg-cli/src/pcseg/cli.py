@@ -1,15 +1,17 @@
 """
 pcseg - command-line point cloud segmentation pipeline.
 
-Loads a structured E57 scan and sweeps a full 360 view around it, either:
+Loads a structured E57 scan and segments it in one of three ways:
 
-  run           prompt-driven: GroundingDINO finds objects matching a text
-                prompt, SAM2 segments them.
-  auto-segment  prompt-free: an automatic mask backend (SAM2 by default)
-                proposes every object it sees; overlapping detections from
-                different views are merged in 3D.
+  run           prompt-driven: sweeps a full 360 view, GroundingDINO finds
+                objects matching a text prompt, SAM2 segments them.
+  auto-segment  prompt-free: sweeps a full 360 view, an automatic mask backend
+                (SAM2 by default) proposes every object it sees; overlapping
+                detections from different views are merged in 3D.
+  pick-segment  single-point: SAM2 segments whatever it finds at one given 3D
+                location (or point index).
 
-Either way the output format is picked from each --out path's extension:
+In every case the output format is picked from each --out path's extension:
 
     .las / .e57         -> segmented point cloud (with per-label classification)
     .png / .jpg / .jpeg -> panorama preview with detected instances highlighted
@@ -21,6 +23,9 @@ Examples:
 
     pcseg auto-segment --input scan.e57 --backend sam2 \\
         --out result.las --out preview.png
+
+    pcseg pick-segment --input scan.e57 --point-xyz 3.0 3.0 -1.0 \\
+        --keep-all-masks --out result.las
 """
 from __future__ import annotations
 
@@ -31,7 +36,6 @@ from pathlib import Path
 
 import numpy as np
 
-from pcseg.core.mask_filters import FILTERS
 from pcseg.core.projection import default_channel
 
 CHANNEL_CHOICES = ["auto", "rgb", "intensity", "normals"]
@@ -82,8 +86,6 @@ def _add_common_flags(sub: argparse.ArgumentParser) -> None:
                            "GroundingDINO always internally resizes to ~800px and SAM2 to exactly 1024x1024 "
                            "regardless of this value, so it neither compensates for a coarse --decimation nor "
                            "gains real detail from a value above ~1024-1333 - it just costs extra render time.")
-    sub.add_argument("--filter", choices=list(FILTERS), default="none",
-                      help="Per-instance 3D noise filter applied before export (default: none).")
     sub.add_argument("--preview-channel", choices=CHANNEL_CHOICES, default="auto",
                       help="Channel used as the background for .png/.jpg outputs (default: auto).")
     sub.add_argument("--device", choices=["auto", "cuda", "cpu"], default="auto",
@@ -198,8 +200,6 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Export all 3 SAM2 candidate masks (ranked by score) instead of only the best-scoring "
                             "one - useful when the point alone is ambiguous (e.g. door vs. door panel vs. wall) "
                             "and you want to inspect and choose offline.")
-    pick.add_argument("--filter", choices=list(FILTERS), default="none",
-                       help="Per-instance 3D noise filter applied before export (default: none).")
     pick.add_argument("--preview-channel", choices=CHANNEL_CHOICES, default="auto",
                        help="Channel used as the background for .png/.jpg outputs (default: auto).")
     pick.add_argument("--device", choices=["auto", "cuda", "cpu"], default="auto",
@@ -244,7 +244,11 @@ def _validate_output_extensions(outputs: list[str]) -> bool:
 
 
 def _dispatch_output(node, result, output_path: str, preview_channel, export_node=None, export_mask=None) -> str:
-    from pcseg.io.exporters import export_mask_preview_image, export_to_e57, export_to_las
+    from pcseg.io.exporters import (
+        export_mask_preview_image,
+        export_to_e57,
+        export_to_las,
+    )
 
     suffix = Path(output_path).suffix.lower()
 
@@ -278,17 +282,12 @@ def _load_scan(args: argparse.Namespace):
 
 
 def _finish(node, result, args) -> int:
-    """Shared tail: filter, classify, (optionally upsample,) export, for whichever command produced `result`."""
+    """Shared tail: classify, (optionally upsample,) export, for whichever command produced `result`."""
     from pcseg.core.classification import assign_classifications
 
     if not result.instances:
         logging.warning("No objects found. Nothing to export.")
         return 1
-
-    if args.filter != "none":
-        filter_fn = FILTERS[args.filter]
-        for inst in result.instances:
-            inst.indices = filter_fn(node, inst.indices)
 
     assign_classifications(node, result.indices_by_label())
 

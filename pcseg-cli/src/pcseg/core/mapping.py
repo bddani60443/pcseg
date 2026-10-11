@@ -66,40 +66,17 @@ class IndexMapper:
         panorama[valid_pixels_mask] = source_data_1d[point_indices]
         return panorama
 
-    def map_from_panorama(self, panorama_2d: NDArray, default_value: float = 0) -> NDArray:
-        """
-        Maps a 2D panorama image (or mask) back to the 1D point cloud array.
-        Essential for converting SAM2 masks to 3D selections.
-
-        Args:
-            panorama_2d: (H, W) or (H, W, C) numpy array.
-
-        Returns:
-            NDArray: 1D array matching the original point cloud count.
-        """
-        num_points = np.max(self.pano_map) + 1
-
-        if panorama_2d.ndim == 3:
-            out_shape = (num_points, panorama_2d.shape[2])
-        else:
-            out_shape = (num_points,)
-
-        source_1d = np.full(out_shape, default_value, dtype=panorama_2d.dtype)
-        valid_mask = self.pano_map >= 0
-        point_indices = self.pano_map[valid_mask]
-        pixel_values = panorama_2d[valid_mask]
-        source_1d[point_indices] = pixel_values
-
-        return source_1d
-
     def apply_mask(self, mask_2d: NDArray, map_x: NDArray, map_y: NDArray, fov: float = 90.0) -> NDArray:
         """
         Back-projects a 2D segmentation mask to point cloud indices.
 
         Projects the masked perspective pixels onto the panorama via map_x/map_y,
-        uses morphological close to fill sampling gaps (no dilate - does not
-        expand beyond the mask boundary), then looks up point indices directly
-        from pano_map.
+        then dilates and closes the resulting sparse panorama mask with an
+        elliptical kernel of ceil(zoom_ratio) + 3 panorama pixels (zoom_ratio =
+        panorama pixels per view pixel) to fill the sampling gaps between
+        projected pixels, then looks up point indices directly from pano_map.
+        The dilation also grows the mask by about half the kernel size beyond
+        its boundary - a few panorama pixels, i.e. a thin extra rim of points.
 
         Args:
             mask_2d: (H_out, W_out) bool/uint8 segmentation mask.

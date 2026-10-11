@@ -171,26 +171,39 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
 
         tools_menu = self.menuBar().addMenu("&Tools")
+        tools_menu.setToolTipsVisible(True)
         models_action = tools_menu.addAction("&Manage Models...")
         models_action.triggered.connect(self.open_models_dialog)
         tools_menu.addSeparator()
 
-        debug_action = tools_menu.addAction("Save Sweep Debug Images")
+        coverage_action = tools_menu.addAction("Save &Coverage Grid Preview...")
+        coverage_action.setToolTip(
+            "Saves a PNG of the scan's panorama showing how the CURRENT Run settings "
+            "would sweep it: each scanned pixel tinted by how many views see it (red = "
+            "gap, green = 1, amber = 2, purple = 3+), every view's footprint outlined "
+            "and numbered in sweep order - check the coverage before spending the time "
+            "(or GPU memory) on a real Run."
+        )
+        coverage_action.triggered.connect(self.viewer.save_coverage_grid_preview)
+
+        debug_action = tools_menu.addAction("Save Debug Images (Runs and Picks)")
         debug_action.setCheckable(True)
         debug_action.setChecked(self.viewer.debug_sweep_images)
         debug_action.setToolTip(
             "Saves an annotated PNG (box + label/score + mask overlay) for every view "
             "DINO+SAM2 processes during a Run - the coarse sweep into its own 'prefilter' "
-            "folder, the Refine pass (if on) into its own 'refine' folder, so the whole "
-            "detection pipeline stays visually traceable. Prompts for a folder the first "
-            "time it's turned on; remembered across restarts either way."
+            "folder, the Refine pass (if on) into its own 'refine' folder - and one PNG per "
+            "point-click pick into a 'picks' folder (the view SAM2 saw with the clicked "
+            "point(s), then every candidate mask with its score and whether it was kept), "
+            "so the whole detection pipeline stays visually traceable. Prompts for a folder "
+            "the first time it's turned on; remembered across restarts either way."
         )
         debug_action.toggled.connect(lambda checked: self._on_debug_sweep_images_toggled(debug_action, checked))
         debug_folder_action = tools_menu.addAction("Debug Images Folder...")
         debug_folder_action.setToolTip(
-            "Choose or change the base folder Save Sweep Debug Images saves into - each "
-            "Run gets its own timestamped subfolder, so repeated runs never overwrite each "
-            "other's images."
+            "Choose or change the base folder debug images are saved into - each Run gets "
+            "its own timestamped subfolder and picks share a 'picks' subfolder, so nothing "
+            "is ever overwritten."
         )
         debug_folder_action.triggered.connect(self.viewer.set_debug_output_folder)
         tools_menu.addSeparator()
@@ -231,7 +244,7 @@ class MainWindow(QMainWindow):
         label_size_action.triggered.connect(self.viewer.pick_label_size)
 
     def _on_debug_sweep_images_toggled(self, action, checked: bool) -> None:
-        """Wired to the Tools menu's checkable 'Save Sweep Debug Images'
+        """Wired to the Tools menu's checkable 'Save Debug Images (Runs and Picks)'
         action instead of a direct .toggled.connect(self.viewer....) (unlike
         every other checkable action here) because this ONE toggle can fail
         (turning it on with no remembered folder prompts for one - see

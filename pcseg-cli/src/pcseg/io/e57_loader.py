@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -50,22 +49,6 @@ class ScanData:
             return node
         finally:
             e57.close()
-
-    @staticmethod
-    def peek_metadata(filepath: str | Path) -> dict:
-        info = {"point_count": 0, "file_size_mb": 0.0, "has_color": False, "has_intensity": False}
-        info["file_size_mb"] = os.path.getsize(filepath) / (1024**2)
-
-        e57 = pye57.E57(str(filepath))
-        try:
-            header = e57.get_header(0)
-            info["point_count"] = header.rowMaximum * header.columnMaximum
-            field_names = header.point_fields
-            info["has_color"] = "colorRed" in field_names
-            info["has_intensity"] = "intensity" in field_names
-        finally:
-            e57.close()
-        return info
 
     def _compute_normals(self, pts: NDArray[np.int16], rows: NDArray[np.int16], cols: NDArray[np.int16],
                           h: int, w: int, normal_step: int = 2) -> NDArray[np.int8]:
@@ -133,7 +116,9 @@ class ScanData:
         modes.append("normals")
 
         scan_name = Path(self.filepath).stem
-        orig_count = orig_rows * orig_cols
+        # rowMaximum/columnMaximum are the largest grid INDICES, not counts, and
+        # a grid may have empty cells - the raw record count is the real total.
+        orig_count = len(raw["rowIndex"])
 
         return ScanNode(
             scan_id=str(uuid.uuid4()),
@@ -158,6 +143,15 @@ class ScanData:
     def _prepare_grid_info(self, raw: dict, orig_rows: int, orig_cols: int):
         row_idx = raw["rowIndex"]
         col_idx = raw["columnIndex"]
+
+        factor = _common_index_factor(row_idx, col_idx)
+        if factor > 1 and self.decimation_step % factor != 0:
+            logging.warning(
+                f"Every grid index in '{Path(self.filepath).name}' is a multiple of {factor} - the file was "
+                f"probably written from a decimated load (e.g. a pcseg .e57 export at --decimation {factor}). "
+                f"Load it with --decimation {factor} (or a multiple of it); at --decimation {self.decimation_step} "
+                f"most panorama pixels stay empty and detection quality suffers."
+            )
 
         mask = (row_idx % self.decimation_step == 0) & (col_idx % self.decimation_step == 0)
 
@@ -256,3 +250,21 @@ class ScanData:
             logging.warning(f"Pose extraction failed, falling back to identity: {e}")
 
         return r_mat, t_vec
+
+
+def _common_index_factor(row_idx: NDArray, col_idx: NDArray, prefix: int = 1_000_000) -> int:
+    """
+    Greatest common divisor of every row and column index (1 for an ordinary
+    scan). A value above 1 means only every n-th grid row/column is present -
+    typically a file exported from an already decimated load. The gcd of a
+    prefix can only shrink as more values are added, so a prefix gcd of 1
+    (the normal case) settles it without scanning the whole array.
+    """
+    factor = 0
+    for idx in (row_idx, col_idx):
+        factor = int(np.gcd(factor, np.gcd.reduce(idx[:prefix])))
+        if factor == 1:
+            return 1
+    for idx in (row_idx, col_idx):
+        factor = int(np.gcd(factor, np.gcd.reduce(idx)))
+    return factor

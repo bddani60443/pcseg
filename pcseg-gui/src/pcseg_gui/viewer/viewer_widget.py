@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import logging
 import os
 import threading
@@ -11,11 +12,13 @@ from datetime import datetime
 import numpy as np
 import OpenGL.GL as gl
 import pyqtgraph.opengl as gl_module
-from PyQt6.QtCore import QPoint, QRect, QSettings, QSize, Qt, pyqtSignal
+from pcseg.core.scan_node import ScanNode
+from PyQt6.QtCore import QPoint, QRect, QRectF, QSettings, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import (
     QColor,
     QCursor,
     QFont,
+    QIcon,
     QPainter,
     QPen,
     QPixmap,
@@ -23,9 +26,9 @@ from PyQt6.QtGui import (
     QStandardItemModel,
     QVector3D,
 )
-from pyqtgraph.Qt import QtCore as pg_QtCore, QtGui as pg_QtGui
 from PyQt6.QtWidgets import (
     QAbstractSpinBox,
+    QApplication,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -48,19 +51,28 @@ from PyQt6.QtWidgets import (
     QRubberBand,
     QScrollArea,
     QSizePolicy,
-    QApplication,
     QSpinBox,
     QSplitter,
     QToolButton,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
+from pyqtgraph.Qt import QtCore as pg_QtCore
+from pyqtgraph.Qt import QtGui as pg_QtGui
 
-from pcseg.core.scan_node import ScanNode
 from pcseg_gui.layers import Layer, LayerInstance
-from pcseg_gui.log_forwarder import LogForwarder, attach_log_forwarder, detach_log_forwarder
+from pcseg_gui.log_forwarder import (
+    LogForwarder,
+    attach_log_forwarder,
+    detach_log_forwarder,
+)
 from pcseg_gui.viewer.layer_panel import LayerPanel
-from pcseg_gui.viewer.point_cloud_item import COLOR_MODES, RENDER_MODES, ShaderPointCloudItem
+from pcseg_gui.viewer.point_cloud_item import (
+    COLOR_MODES,
+    RENDER_MODES,
+    ShaderPointCloudItem,
+)
 from pcseg_gui.viewer.range_slider import RangeSlider
 from pcseg_gui.viewer.view_cube import FACE_LABELS, ViewCubeOverlay, face_snap_target
 from pcseg_gui.wheel_guard import install_wheel_guard
@@ -86,6 +98,27 @@ def _to_unit_color(rgb_255: tuple[int, int, int]) -> tuple[float, float, float]:
     what the outline shader's `u_color` uniform expects (see
     ShaderPointCloudItem.set_selection_outline/set_hover_outline)."""
     return (rgb_255[0] / 255.0, rgb_255[1] / 255.0, rgb_255[2] / 255.0)
+
+
+def _union_indices(index_arrays: list[np.ndarray]) -> np.ndarray:
+    """Concatenates several instances' own `indices` arrays for
+    highlight_points/set_selection_outline - deliberately NOT deduplicated
+    via np.unique (real, reported freeze on selecting one large detected
+    object: np.unique sorts, ~1 SECOND for a single ~2M-point instance on a
+    20M-point scan, vs ~1ms for a plain concatenate - see git history for
+    the profiling that found this). A duplicate index (two selected
+    instances sharing a point, or the same instance appearing twice) is
+    harmless here: highlight_points/clear_highlight round-trip correctly
+    through fancy-index gather/scatter regardless (every duplicate position
+    reads/writes the SAME value, since they all key off the same original
+    point), and the outline pass just draws that one point's mask twice, not
+    incorrectly. The single-array case (by far the most common - one clicked
+    instance) skips the concatenate call entirely too, returning the array
+    itself with no copy at all, matching hover_preview_points' own zero-copy
+    cost for the identical situation."""
+    if len(index_arrays) == 1:
+        return index_arrays[0]
+    return np.concatenate(index_arrays)
 
 
 @dataclass
@@ -430,7 +463,7 @@ class PickableGLView(gl_module.GLViewWidget):
             self._mid_press_pos = None
             self.unsetCursor()  # pan-plane cursor (if any) only shows DURING the drag
             ev.accept()
-            self._settle_after_drag()
+            self.update()
             return
         if ev.button() == Qt.MouseButton.LeftButton and self._click_press_pos is not None:
             was_drag = self._click_became_drag
@@ -450,7 +483,7 @@ class PickableGLView(gl_module.GLViewWidget):
             shift = bool(ev.modifiers() & Qt.KeyboardModifier.ShiftModifier)
             if was_drag:
                 self.box_select.emit(rect, shift)
-                self._settle_after_drag()
+                self.update()
             else:
                 self.instance_click.emit(pos, shift)
             return
@@ -470,19 +503,6 @@ class PickableGLView(gl_module.GLViewWidget):
             ev.accept()
             return
         super().mouseReleaseEvent(ev)
-        self._settle_after_drag()
-
-    def _settle_after_drag(self) -> None:
-        # An orbit/pan drag (or a plain click) just ended - force one fresh,
-        # unthrottled frustum-culling recompute so a view the user has
-        # actually stopped on is never left with the bounded staleness the
-        # per-frame throttle accepts during active dragging (see
-        # ShaderPointCloudItem._refresh_frustum_culling_if_needed). Harmless
-        # no-op for any item without that method, or with culling off.
-        for item in self.items:
-            settle = getattr(item, "request_frustum_settle", None)
-            if settle is not None:
-                settle()
         self.update()
 
     def keyPressEvent(self, ev) -> None:
@@ -798,7 +818,7 @@ class Viewer3DWidget(QFrame):
         # point_item each time (see load_node) - point_item itself has no
         # memory across that recreation.
         self.outline_effect_enabled = self._settings.value("outline_effect_enabled", True, type=bool)
-        # Sweep debug images (Tools menu - see MainWindow._build_menu,
+        # Debug images for Runs and picks (Tools menu - see MainWindow._build_menu,
         # set_debug_sweep_images/set_debug_output_folder below). `debug_dir`
         # is the BASE folder every run's own timestamped subfolder lands in -
         # remembered across restarts so re-enabling this later doesn't
@@ -993,23 +1013,10 @@ class Viewer3DWidget(QFrame):
         self.view_decimation_spin.valueChanged.connect(self._on_view_decimation_changed)
         row.addWidget(self.view_decimation_spin)
 
-        self.frustum_culling_checkbox = QCheckBox("Frustum culling")
-        self.frustum_culling_checkbox.setToolTip(
-            "Experimental, additive rendering optimization: skips uploading points whose "
-            "coarse spatial region falls entirely outside the current camera view (never "
-            "points that might actually be visible - errs toward showing a bit too much, "
-            "never toward hiding real geometry). Purely a rendering choice, same as View "
-            "detail - never affects segmentation, export, or point counts. A single "
-            "checkbox to turn fully off if it ever causes trouble."
-        )
-        self.frustum_culling_checkbox.toggled.connect(self._on_frustum_culling_toggled)
-        row.addWidget(self.frustum_culling_checkbox)
-
         # Moved out of the Layers box (design review 2026-09) - the Layers
         # box is layer DATA (the list + Instance details), this is a
-        # rendering/display toggle, same category as Frustum culling right
-        # next to it, not View detail's cousin the Layers box was never
-        # really the right home for. Renamed from "Show instance boxes +
+        # rendering/display toggle, same category as View detail next to
+        # it, which the Layers box was never really the right home for. Renamed from "Show instance boxes +
         # labels (selected layer)" to fit this row's terser naming
         # convention - full explanation moved into the tooltip instead.
         self.show_instance_overlay_checkbox = QCheckBox("Instance labels")
@@ -1028,11 +1035,6 @@ class Viewer3DWidget(QFrame):
         btn_center.setToolTip("Re-centers the camera on the loaded scan's origin.")
         btn_center.clicked.connect(self.center_camera)
         row.addWidget(btn_center)
-
-        btn_screenshot = QPushButton("Save Screenshot...")
-        btn_screenshot.setToolTip("Grabs the current 3D view framebuffer and saves it as a PNG.")
-        btn_screenshot.clicked.connect(self.save_screenshot)
-        row.addWidget(btn_screenshot)
 
         # Background color moved to MainWindow's View menu (see
         # main_window.py._build_menu) to free up panel/toolbar space - purely
@@ -1167,7 +1169,7 @@ class Viewer3DWidget(QFrame):
 
         No Mode selector any more (design review 2026-09-10: this panel WAS
         View/Run/Auto-Segment, switched via a combo box - now it's just Run,
-        permanently, since that's pcseg-gui's one standard, dedicated
+        permanently, since that's the viewer's one standard, dedicated
         workflow; View-only was never really a "mode" (no settings of its
         own), and Auto-Segment/Pick Point moved out entirely - Pick Point to
         the Layers panel's right-click menu, Auto-Segment dropped from the
@@ -1215,16 +1217,20 @@ class Viewer3DWidget(QFrame):
         layers_box = QGroupBox("Layers")
         layers_box_layout = QVBoxLayout(layers_box)
 
-        instance_select_hint = QLabel(
+        # The mouse/keyboard help used to be a permanent multi-line caption
+        # here - now behind the same hover/click info icon every other
+        # section uses, so it no longer takes up the panel's space.
+        controls_header = QHBoxLayout()
+        controls_header.addWidget(_info_icon(
             "Left button: click a detection to select it, drag a box to "
             "select several (Shift+click/drag removes instead of adding). "
             "Middle button: drag to orbit, Shift+drag to pan, Ctrl+drag to "
             "pan vertically. Delete removes the selected instance(s), "
             "Escape clears the selection."
-        )
-        instance_select_hint.setWordWrap(True)
-        instance_select_hint.setStyleSheet("color: #888; font-size: 11px;")
-        layers_box_layout.addWidget(instance_select_hint)
+        ))
+        controls_header.addWidget(_section_hint_label("Mouse and keyboard controls"))
+        controls_header.addStretch(1)
+        layers_box_layout.addLayout(controls_header)
 
         # Hidden until a pick session is armed (see _start_pick_into_layer) -
         # lets picking several objects into one layer happen as a batch
@@ -1347,16 +1353,17 @@ class Viewer3DWidget(QFrame):
         box = QGroupBox("Add Points by Clicking")
         layout = QVBoxLayout(box)
 
-        hint = QLabel(
+        hint_header = QHBoxLayout()
+        hint_header.addWidget(_info_icon(
             "A separate AI segmentation mode from Run Prompt below (SAM2 only, no "
             "text prompt) - right-click an object in the 3D view and SAM2 segments "
             "it under the cursor. Adds into the currently selected layer (see "
             "Layers on the left); if none is selected, you'll be asked to name a "
             "new one first."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: #888; font-size: 11px;")
-        layout.addWidget(hint)
+        ))
+        hint_header.addWidget(_section_hint_label())
+        hint_header.addStretch(1)
+        layout.addLayout(hint_header)
 
         btn = QPushButton("Start Picking...")
         btn.setToolTip(
@@ -1399,13 +1406,20 @@ class Viewer3DWidget(QFrame):
         self.run_overlap.setToolTip(
             "Fractional angular overlap between neighboring views in the automatically "
             "computed view grid (matches --overlap) - the practical equivalent of a "
-            "manual step size: smaller overlap means fewer, more widely-spaced views."
+            "manual step size: smaller overlap means fewer, more widely-spaced views. "
+            "Still used exactly the same way when Multi-scale coverage is on, too - EVERY "
+            "one of its three tiers (far/middle/near) builds its own grid with this same "
+            "overlap fraction, just at that tier's own FOV. Turning Multi-scale coverage "
+            "on never bypasses this setting."
         )
         self.run_fov = _double_spin(10.0, 170.0, 5.0, 90.0)
         self.run_fov.setToolTip(
-            "Field of view per view, in degrees (matches --fov). Also the base FOV "
-            "Multi-scale coverage's own middle tier uses, and what its far/near tiers "
-            "scale relative to."
+            "Field of view per view, in degrees (matches --fov). With Multi-scale "
+            "coverage OFF, this is simply the whole sweep's own FOV. With it ON, this "
+            "value doesn't stop mattering - it becomes the middle tier's own FOV, and the "
+            "base the far/near tiers scale relative to (their own FOV = this x Far/Near "
+            "FOV scale, in Multi-scale coverage's own settings). So changing this still "
+            "reshapes the ENTIRE multi-scale grid, not just a part of it."
         )
         return _build_settings_popup(
             self, "Sweep geometry settings",
@@ -1466,7 +1480,20 @@ class Viewer3DWidget(QFrame):
         layout.addWidget(self.prompt_input)
 
         order_box = QGroupBox("Category draw order within this layer")
+        order_box.setToolTip(
+            "Only matters for a multi-category prompt (e.g. 'window, building') - each "
+            "category becomes its own layer, and this decides which of those layers ends "
+            "up highest in the stack, winning any point/pixel a lower one also claims. "
+            "Automatic (default) ranks by each category's own total point count - "
+            "whichever detected the most real estate wins. Manual order (below) lets you "
+            "rank the parsed categories yourself instead."
+        )
         order_layout = QVBoxLayout(order_box)
+        order_header = QHBoxLayout()
+        order_header.addWidget(_info_icon(order_box.toolTip()))
+        order_header.addWidget(_section_hint_label())
+        order_header.addStretch(1)
+        order_layout.addLayout(order_header)
         self.category_manual_order = QCheckBox("Manual order (default: automatic, by size)")
         self.category_manual_order.setToolTip(
             "Off (default): within this layer, a smaller/more specific detection (a "
@@ -1532,7 +1559,17 @@ class Viewer3DWidget(QFrame):
         layout.addLayout(sweep_row)
 
         channels_box = QGroupBox("Channels")
+        channels_box.setToolTip(
+            "Which rendered view of the scan GroundingDINO and SAM2 each actually look "
+            "at - RGB, intensity, or surface normals, chosen independently per model "
+            "since one model can do better on a channel the other doesn't. 'auto' (the "
+            "default for both) picks whichever channel this particular scan actually has "
+            "available, the same resolution order the CLI itself uses - see the combo's "
+            "own 'auto (...)' label for what that resolves to on the CURRENTLY loaded "
+            "scan."
+        )
         channels_form = _form(channels_box)
+        channels_form.addRow(_info_icon(channels_box.toolTip()), _section_hint_label())
         self.run_dino_channel = _channel_combo()
         self.run_dino_channel.setToolTip(
             "Rendered channel GroundingDINO runs detection on (matches --dino-channel; "
@@ -1547,7 +1584,18 @@ class Viewer3DWidget(QFrame):
         channels_form.addRow("SAM2 channel:", _row_with_reset(self.run_sam_channel, 0))
 
         thresh_box = QGroupBox("Thresholds")
+        thresh_box.setToolTip(
+            "Confidence/quality filters applied at each stage of the detection pipeline, "
+            "in the order they actually run: DINO box/text thresholds decide what counts "
+            "as a detection AT ALL (before SAM2 ever runs); Max box area fraction drops a "
+            "degenerate box that claims almost the whole view; SAM2 score threshold "
+            "filters by the resulting MASK's own boundary quality (a wrong-but-clean mask "
+            "can still score high); Min score is the LAST filter, after merging, on the "
+            "final detection's own semantic (DINO text-match) confidence. Each field's own "
+            "tooltip below has the specifics."
+        )
         thresh_form = _form(thresh_box)
+        thresh_form.addRow(_info_icon(thresh_box.toolTip()), _section_hint_label())
         self.run_dino_box_thresh = _double_spin(0.0, 1.0, 0.05, 0.3)
         self.run_dino_box_thresh.setToolTip(
             "Minimum GroundingDINO box confidence to keep a detection (matches "
@@ -1590,7 +1638,18 @@ class Viewer3DWidget(QFrame):
         # Advanced: rarely-changed thresholds/channel overrides and the
         # optional manual category order - collapsed by default so the
         # panel's primary space goes to prompt + sweep geometry + Run.
-        advanced_box, advanced_layout = _collapsible_section("Advanced settings")
+        advanced_box, advanced_layout = _collapsible_section(
+            "Advanced settings",
+            tooltip=(
+                "Rarely-changed knobs, collapsed by default: category draw order, which "
+                "rendered channel DINO/SAM2 each use, and the detection/filtering "
+                "thresholds. Every field in here still applies to every Run exactly the "
+                "same whether this section happens to be expanded or collapsed right now "
+                "- collapsing it only hides the controls, it never resets or disables "
+                "anything (see the individual sections/fields below for what each one "
+                "actually does)."
+            ),
+        )
         advanced_layout.addWidget(order_box)
         advanced_layout.addWidget(channels_box)
         advanced_layout.addWidget(thresh_box)
@@ -1725,17 +1784,6 @@ class Viewer3DWidget(QFrame):
         refine_box.setVisible(self.run_refine_detections.isChecked())
         self.run_refine_detections.toggled.connect(refine_box.setVisible)
 
-        btn_preview_grid = QPushButton("Save Coverage Grid Preview...")
-        btn_preview_grid.setToolTip(
-            "Saves a PNG of the scan's own full panorama with the CURRENT sweep "
-            "geometry settings' own coverage grid drawn on top (each distinct FOV - "
-            "just the one, or the extra Multi-scale coverage tiers if that's on - "
-            "in its own color) - see exactly what a Run would actually sweep before "
-            "spending the time (or VRAM) running it for real."
-        )
-        btn_preview_grid.clicked.connect(self.save_coverage_grid_preview)
-        layout.addWidget(btn_preview_grid)
-
         btn_run = QPushButton("Run")
         btn_run.setToolTip("Sweeps and segments every match, added as a new layer on top of the stack.")
         btn_run.clicked.connect(self.run_prompt_segmentation)
@@ -1839,23 +1887,32 @@ class Viewer3DWidget(QFrame):
             node, color_mode=color_mode, point_size=self.point_size,
             render_mode=self.combo_render.currentIndex(), view_decimation=view_decimation,
         )
+        # Initialize its GL state (shader compile, VBOs) HERE, synchronously,
+        # rather than leaving it to its own lazy first paint() - a caller
+        # that restores a layer stack right after load_node() returns (see
+        # MainWindow.export_at_full_resolution/reload_at_different_detail_dialog/
+        # open_project, all of which set layer_panel.layers + call refresh()
+        # synchronously, before the event loop gets a turn to actually paint
+        # anything) would otherwise call apply_layer_colors()/
+        # upload_color_data() while vbo_col is still None - a real reported
+        # bug: those calls silently no-op (see their own `if self.vbo_col is
+        # None: return` guard), so the transferred layers exist in the
+        # Layers panel but the 3D view keeps showing plain base colors until
+        # something else happens to re-trigger composition later. Doing this
+        # eagerly means vbo_col (and everything else) is always ready by the
+        # time load_node() returns, for every caller.
+        self.gl_view.makeCurrent()
+        self.point_item.initializeGL()
+        self.gl_view.doneCurrent()
         self.gl_view.addItem(self.point_item)
         self.center_camera()
         self._update_auto_channel_labels(node)
         # Carry this widget's own outline-toggle setting over to the new
-        # point item, same reasoning as frustum culling right below - a
-        # fresh ShaderPointCloudItem always starts at ITS OWN default
+        # point item - a fresh ShaderPointCloudItem always starts at ITS OWN default
         # (enabled), which would silently override an explicit "off" the
         # user set via the View menu on every new load otherwise. Pure
         # state, no GL context needed (see set_outline_enabled).
         self.point_item.set_outline_enabled(self.outline_effect_enabled)
-        if self.frustum_culling_checkbox.isChecked():
-            # Carry the toggle's current state over to the new point item -
-            # ShaderPointCloudItem is recreated per load, so its own flag would
-            # otherwise silently reset to the (disabled) default every load.
-            self.gl_view.makeCurrent()
-            self.point_item.set_frustum_culling(True)
-            self.gl_view.doneCurrent()
         logging.info(f"Loaded '{node.scan_name}': {node.point_count:,} points, color modes: {available}")
 
     def _update_auto_channel_labels(self, node: ScanNode) -> None:
@@ -1891,14 +1948,6 @@ class Viewer3DWidget(QFrame):
             self.gl_view.update()
         finally:
             QApplication.restoreOverrideCursor()
-
-    def _on_frustum_culling_toggled(self, checked: bool) -> None:
-        if self.point_item is None:
-            return
-        self.gl_view.makeCurrent()
-        self.point_item.set_frustum_culling(checked)
-        self.gl_view.doneCurrent()
-        self.gl_view.update()
 
     # ── Region of interest (theta/phi crop, used by Run) ────────────────────
 
@@ -2268,14 +2317,6 @@ class Viewer3DWidget(QFrame):
         self.gl_view.update()
         self.status_label.setText(f"View: {FACE_LABELS[face_index]}")
 
-    def save_screenshot(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Save Screenshot", "screenshot.png", "PNG Image (*.png)")
-        if not path:
-            return
-        image = self.gl_view.grabFramebuffer()
-        image.save(path)
-        logging.info(f"Screenshot saved to {path}")
-
     def pick_background_color(self) -> None:
         """Opens a QColorDialog defaulting to the CURRENT background (whatever
         pyqtgraph's own GLViewWidget.opts['bgcolor'] holds - it's what its paint
@@ -2323,14 +2364,14 @@ class Viewer3DWidget(QFrame):
         subfolder inside it (see `_new_run_debug_dir`), so repeated runs
         never overwrite each other's images. Persists via QSettings, same
         pattern as background color/outline effect."""
-        chosen = QFileDialog.getExistingDirectory(self, "Choose sweep debug images folder", self.debug_dir or "")
+        chosen = QFileDialog.getExistingDirectory(self, "Choose debug images folder", self.debug_dir or "")
         if not chosen:
             return
         self.debug_dir = chosen
         self._settings.setValue("debug_dir", chosen)
 
     def set_debug_sweep_images(self, enabled: bool) -> bool:
-        """Toggles saving annotated sweep debug images (Tools menu - a
+        """Toggles saving annotated debug images of Runs and picks (Tools menu - a
         checkable action, see MainWindow._build_menu). Turning it ON with no
         folder chosen yet (this session or a remembered one) prompts for one
         immediately via `set_debug_output_folder` - cancelling that prompt
@@ -2355,6 +2396,15 @@ class Viewer3DWidget(QFrame):
             return None
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return os.path.join(self.debug_dir, f"sweep_{stamp}")
+
+    def _pick_debug_dir(self) -> str | None:
+        """Where point-click (pick) debug images go, or None if debug images
+        are off: one shared `picks` subfolder under `debug_dir` - each pick
+        is a single timestamped PNG (see point_segmentation_service.
+        segment_at_point's `debug_dir`), unlike a Run's folder of views."""
+        if not (self.debug_sweep_images and self.debug_dir):
+            return None
+        return os.path.join(self.debug_dir, "picks")
 
     def pick_label_size(self) -> None:
         """Font size (points) for the instance-box overlay's billboard labels
@@ -2572,7 +2622,11 @@ class Viewer3DWidget(QFrame):
             ]
             new_hidden_mask = np.zeros(self.node.point_count, dtype=bool)
             if hidden_arrays:
-                new_hidden_mask[np.unique(np.concatenate(hidden_arrays))] = True
+                # No np.unique - a boolean assignment like this is
+                # duplicate-safe (see _union_indices' own docstring), and
+                # np.unique's sort was a real, reported freeze on a large
+                # hidden instance.
+                new_hidden_mask[_union_indices(hidden_arrays)] = True
         self.point_item.set_hidden_mask(new_hidden_mask)
         self.gl_view.doneCurrent()
         self.gl_view.update()
@@ -2625,8 +2679,9 @@ class Viewer3DWidget(QFrame):
 
     def _ensure_dino_service(self):
         if self._dino_service is None:
-            from pcseg_gui import model_sizes
             from pcseg.services.dino_service import DinoService
+
+            from pcseg_gui import model_sizes
             config_path, checkpoint_path = model_sizes.dino_paths(self.dino_size)
             logging.info(f"Loading GroundingDINO ({self.dino_size}, first use of this size this session)...")
             self._dino_service = DinoService(config_path=str(config_path), checkpoint_path=str(checkpoint_path))
@@ -2634,8 +2689,9 @@ class Viewer3DWidget(QFrame):
 
     def _ensure_sam_service(self):
         if self._sam_service is None:
-            from pcseg_gui import model_sizes
             from pcseg.services.sam_service import SamService
+
+            from pcseg_gui import model_sizes
             config_path, checkpoint_path = model_sizes.sam_paths(self.sam_size)
             logging.info(f"Loading SAM2 ({self.sam_size}, first use of this size this session)...")
             self._sam_service = SamService(config_path=config_path, checkpoint_path=str(checkpoint_path))
@@ -2651,7 +2707,11 @@ class Viewer3DWidget(QFrame):
         not just a tidier result): when ROI is off, theta_range/phi_range are
         both None, which compute_coverage_grid already treats as "the scan's
         own real-data extent"."""
-        from pcseg.core.projection import compute_coverage_grid, compute_multiscale_coverage_grid, real_scan_mask
+        from pcseg.core.projection import (
+            compute_coverage_grid,
+            compute_multiscale_coverage_grid,
+            real_scan_mask,
+        )
 
         roi_theta, roi_phi = self._roi_ranges()
         if self.run_multiscale_coverage.isChecked():
@@ -2671,19 +2731,24 @@ class Viewer3DWidget(QFrame):
         )
 
     def save_coverage_grid_preview(self) -> None:
-        """Saves a PNG of the scan's own full panorama with the CURRENT Run
-        settings' own coverage grid (see `_build_view_grid`) drawn on top,
-        each distinct FOV in its own color (see
-        `core.projection.render_coverage_grid_preview`) - lets you inspect
-        exactly what a Run would sweep, and where Multi-scale coverage's
-        extra zoom tiers land (if that's on), without spending the time (or
-        GPU memory) actually running DINO/SAM2.
+        """Tools > Save Coverage Grid Preview...: saves a PNG of the scan's
+        full panorama showing how the CURRENT Run settings' coverage grid
+        (see `_build_view_grid`) covers it - every scanned pixel tinted by how
+        many views see it (gaps in red), each view's true footprint outlined
+        and numbered in sweep order (see
+        `core.projection.render_coverage_grid_preview`) - so you can inspect
+        exactly what a Run would sweep, including Multi-scale coverage's
+        extra zoom tiers, without spending the time (or GPU memory) actually
+        running DINO/SAM2.
 
         The save path is picked FIRST (cheap, instant) so a cancelled dialog
         never wastes the render itself - reconstructing the scan's full
         panorama can take a while on a large scan, so this runs on a
         background thread like every other heavy operation here."""
-        if self.node is None or self._busy:
+        if self.node is None:
+            self.status_label.setText("Load a scan first.")
+            return
+        if self._busy:
             return
 
         path, _ = QFileDialog.getSaveFileName(
@@ -2858,7 +2923,11 @@ class Viewer3DWidget(QFrame):
         selected_insts = [inst for inst in layer.instances if id(inst) in self._selected_instance_ids]
         if not selected_insts:
             return
-        self._focus_indices = np.unique(np.concatenate([inst.indices for inst in selected_insts]))
+        # No np.unique - only ever used as a boolean mask index (see
+        # _recompute_composition), which is duplicate-safe - see
+        # _union_indices' own docstring for why this matters (np.unique's
+        # sort was a real, reported freeze on a large selected instance).
+        self._focus_indices = _union_indices([inst.indices for inst in selected_insts])
         self._recompute_composition()
         self.status_label.setText(
             f"Focused on {len(selected_insts)} instance(s) - everything else hidden. "
@@ -3312,7 +3381,7 @@ class Viewer3DWidget(QFrame):
             self.point_item.clear_highlight()
             self.point_item.set_selection_outline(None, _to_unit_color(SELECTION_COLOR))
         else:
-            union = np.unique(np.concatenate([inst.indices for inst in selected_insts]))
+            union = _union_indices([inst.indices for inst in selected_insts])
             self.point_item.highlight_points(union, color=SELECTION_COLOR)
             self.point_item.set_selection_outline(union, _to_unit_color(SELECTION_COLOR))
         self.gl_view.doneCurrent()
@@ -3432,6 +3501,7 @@ class Viewer3DWidget(QFrame):
         # color mode, not a separately chosen one (see _start_pick_into_layer).
         channel = self.point_item.current_color_mode
         sam = self._ensure_sam_service()
+        debug_dir = self._pick_debug_dir()
 
         def task(progress_callback=None):
             # Single-point picks always request all 3 SAM2-ranked candidates -
@@ -3443,7 +3513,7 @@ class Viewer3DWidget(QFrame):
             # only its single best mask there instead (see its own docstring).
             return segment_at_point(
                 sam, node, point_index, fov=self._PICK_FOV_DEG, channel=channel,
-                keep_all_masks=True, extra_indices=extra_indices,
+                keep_all_masks=True, extra_indices=extra_indices, debug_dir=debug_dir,
             )
 
         extra_note = f" (+{len(extra_indices)} more point(s))" if extra_indices else ""
@@ -3615,7 +3685,7 @@ class Viewer3DWidget(QFrame):
         if self.point_item is None:
             return
         if self._pending_picks:
-            union = np.unique(np.concatenate([p.indices for p in self._pending_picks]))
+            union = _union_indices([p.indices for p in self._pending_picks])
             self.gl_view.makeCurrent()
             # Flush hover first - see _refresh_instance_selection_highlight
             # for why a stale hover backup can otherwise stomp this.
@@ -3923,7 +3993,7 @@ def _aabb_edge_vertices(mn: np.ndarray, mx: np.ndarray) -> np.ndarray:
 
 # ── Small widget-construction helpers (used only within this module) ───────
 
-def _collapsible_section(title: str, expanded: bool = False) -> tuple[QWidget, QVBoxLayout]:
+def _collapsible_section(title: str, expanded: bool = False, tooltip: str = "") -> tuple[QWidget, QVBoxLayout]:
     """A disclosure section - a plain arrow + title header (NOT a checkbox)
     that expands/collapses its content on click, content actually hidden
     (not just greyed-out) when collapsed so it reclaims the vertical space.
@@ -3949,7 +4019,16 @@ def _collapsible_section(title: str, expanded: bool = False) -> tuple[QWidget, Q
     header.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
     header.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
     header.setAutoRaise(True)  # flat until hovered - matches every other plain toolbar button in the app
-    outer.addWidget(header)
+    if tooltip:
+        header.setToolTip(tooltip)
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.addWidget(header)
+        header_row.addWidget(_info_icon(tooltip))
+        header_row.addStretch(1)
+        outer.addLayout(header_row)
+    else:
+        outer.addWidget(header)
 
     content = QWidget()
     content_layout = QVBoxLayout(content)
@@ -3995,6 +4074,67 @@ def _form(parent):
     return layout
 
 
+def _info_icon_image() -> QIcon:
+    """The info button's icon: a white "i" on a blue disc, painted here
+    rather than using the circled-i character (U+24D8) as the button's text -
+    that glyph is missing from many Linux font sets, where the button then
+    rendered completely blank. Drawn at 2x for high-DPI screens. Deliberately
+    NOT cached in a module-level global: a QIcon/QPixmap that outlives the
+    QApplication is destroyed after Qt itself at interpreter exit, which
+    crashes the process (seen as a segfault on quitting the viewer)."""
+    size, ratio = 16, 2
+    pixmap = QPixmap(size * ratio, size * ratio)
+    pixmap.setDevicePixelRatio(ratio)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor("#6fa8dc"))
+    painter.drawEllipse(QRectF(1, 1, size - 2, size - 2))
+    font = QFont()
+    font.setBold(True)
+    font.setPixelSize(11)
+    painter.setFont(font)
+    painter.setPen(QColor("white"))
+    painter.drawText(QRectF(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, "i")
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _info_icon(tooltip: str) -> QToolButton:
+    """A small, deliberately visible "there's an explanation here" affordance
+    (design review 2026-09-16, user request: plain setToolTip() on a field
+    works but is invisible until you happen to hover exactly that widget -
+    nothing on screen signals it's documented at all). Hover shows `tooltip`
+    like any normal tooltip; a click ALSO force-shows the same text right at
+    the cursor via QToolTip.showText - same content, just for anyone who'd
+    rather click than hover-and-wait, or who's using a touch/no-hover input.
+    Purely informational - never gates or changes anything itself."""
+    btn = QToolButton()
+    btn.setIcon(_info_icon_image())
+    btn.setIconSize(QSize(16, 16))
+    btn.setAutoRaise(True)
+    btn.setFixedSize(18, 18)
+    btn.setCursor(Qt.CursorShape.WhatsThisCursor)
+    # Qt only word-wraps RICH-text tooltips - a long plain-text one is shown
+    # as a single line as wide as the text, so wrap it in <qt> (escaped).
+    rich = "<qt>" + html.escape(tooltip).replace("\n", "<br>") + "</qt>"
+    btn.setToolTip(rich)
+    btn.setStyleSheet("QToolButton { border: none; }")
+    btn.clicked.connect(lambda: QToolTip.showText(QCursor.pos(), rich, btn))
+    return btn
+
+
+def _section_hint_label(text: str = "What is this section?") -> QLabel:
+    """The small gray caption next to a section-level _info_icon (order_box/
+    channels_box/thresh_box) - just names what the icon is for, since a lone
+    icon with no caption at all reads as orphaned/unclear what it belongs
+    to."""
+    label = QLabel(text)
+    label.setStyleSheet("color: #888; font-size: 11px;")
+    return label
+
+
 def _row_with_reset(widget, default) -> QWidget:
     """Wraps `widget` (a QDoubleSpinBox, QComboBox, or QCheckBox) with a
     small reset-to-default icon button right after it - shown only once the
@@ -4014,12 +4154,22 @@ def _row_with_reset(widget, default) -> QWidget:
     time the icon appeared/disappeared, moving the arrows out from under
     the cursor mid-click if you were repeatedly nudging a value right at
     its default. Reserving the space permanently fixes the row's width for
-    good, so nothing next to it ever moves."""
+    good, so nothing next to it ever moves.
+
+    Also adds a visible _info_icon right before the reset button, reusing
+    `widget`'s OWN setToolTip() text - every call site already sets a real
+    one on the field before wrapping it here, so this needs no separate
+    text to maintain; a widget with no tooltip set (toolTip() == "") simply
+    gets no icon rather than a blank, useless one."""
     container = QWidget()
     row = QHBoxLayout(container)
     row.setContentsMargins(0, 0, 0, 0)
     row.setSpacing(4)
     row.addWidget(widget, stretch=1)
+
+    tooltip = widget.toolTip()
+    if tooltip:
+        row.addWidget(_info_icon(tooltip))
 
     btn = QToolButton()
     btn.setAutoRaise(True)

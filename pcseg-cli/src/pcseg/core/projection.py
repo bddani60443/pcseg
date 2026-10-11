@@ -54,6 +54,23 @@ def default_channel(node: ScanNode) -> Channel:
     return "normals"
 
 
+def _view_rotation(theta: float, phi: float) -> np.ndarray:
+    """Rotation from a perspective view's local frame (x right, y up, z
+    forward) to the panorama's frame, for a view centred at yaw `theta` and
+    pitch `phi` (degrees; phi > 0 looks down). Shared by the forward map
+    (get_face_projection_map), its inverse (project_point_into_view) and the
+    coverage footprints (view_coverage_counts), so all three agree exactly."""
+    theta_rad = np.radians(theta)
+    phi_rad = np.radians(phi)
+    r_theta = np.array([[np.cos(theta_rad), 0, np.sin(theta_rad)],
+                        [0, 1, 0],
+                        [-np.sin(theta_rad), 0, np.cos(theta_rad)]])
+    r_phi = np.array([[1, 0, 0],
+                      [0, np.cos(phi_rad), -np.sin(phi_rad)],
+                      [0, np.sin(phi_rad), np.cos(phi_rad)]])
+    return r_theta @ r_phi
+
+
 def get_face_projection_map(h: int, w: int, theta: float, phi: float, size: int, fov: float = 90) -> tuple[np.ndarray, np.ndarray]:
     """Builds the cv2.remap coordinate maps for a perspective crop out of an equirectangular panorama."""
     fov_rad = np.radians(fov)
@@ -67,19 +84,7 @@ def get_face_projection_map(h: int, w: int, theta: float, phi: float, size: int,
     vec = np.stack([xv, yv, z], axis=-1)
     vec /= np.linalg.norm(vec, axis=-1, keepdims=True)
 
-    theta_rad = np.radians(theta)
-    phi_rad = np.radians(phi)
-
-    r_theta = np.array([[np.cos(theta_rad), 0, np.sin(theta_rad)],
-                         [0, 1, 0],
-                         [-np.sin(theta_rad), 0, np.cos(theta_rad)]])
-
-    r_phi = np.array([[1, 0, 0],
-                       [0, np.cos(phi_rad), -np.sin(phi_rad)],
-                       [0, np.sin(phi_rad), np.cos(phi_rad)]])
-
-    r = r_theta @ r_phi
-
+    r = _view_rotation(theta, phi)
     vec_rot = vec @ r.T
 
     lon = np.arctan2(vec_rot[..., 0], vec_rot[..., 2])
@@ -329,12 +334,18 @@ def compute_multiscale_coverage_grid(
       and near tiers' cells are carved out, so every direction is covered
       by exactly one tier, never two.
 
-    A tier whose mask has no real data anywhere simply contributes zero
-    tiles, same as `compute_coverage_grid` does for any empty tile.
+    Any tier restricted to a mask with no real data anywhere in it (e.g. a
+    scan with no meaningfully distant OR close material after percentile
+    thresholding, or - now that the middle tier is itself restricted - a scan
+    where the far/near tiers happen to already cover everything) simply
+    contributes zero tiles, same as `compute_coverage_grid` already does for
+    any single empty tile.
 
-    `phi_range`/`theta_range`, if given, restrict all three tiers to that
-    same region, while each tier still narrows its own candidate area
-    within it via `valid_mask`.
+    `phi_range`/`theta_range`, if given, restrict ALL THREE tiers to that
+    SAME region (e.g. an active ROI) - each tier still independently narrows
+    ITS OWN candidate area within that restriction via `valid_mask`, so a
+    far-only or near-only tier never probes tiles outside where its own kind
+    of material actually exists, even inside a shared ROI.
     """
     valid_mask = real_scan_mask(node)
     real_mask = real_point_mask(node)
@@ -376,17 +387,40 @@ def compute_multiscale_coverage_grid(
     return middle + far + near
 
 
-# BGR (cv2 convention), assigned to each DISTINCT fov value in a preview's own
-# view_grid in ascending order - so the smallest/most-zoomed tier always gets
-# the same color regardless of how many tiers are actually present (a plain,
-# single-fov grid just uses the first one).
-_COVERAGE_PREVIEW_PALETTE_BGR = [
-    (0, 215, 255),   # yellow
-    (255, 80, 0),    # blue
-    (0, 0, 255),     # red
-    (0, 200, 0),     # green
-    (255, 0, 255),   # magenta
-]
+def view_coverage_counts(h: int, w: int, view_grid: list[tuple[float, float] | tuple[float, float, float]],
+                         default_fov: float = 90.0) -> list[NDArray]:
+    """
+    One boolean (h, w) mask per view of `view_grid`: True for every
+    equirectangular-panorama pixel that view's perspective crop actually
+    sees. Computed per pixel by the exact inverse of get_face_projection_map
+    (pixel -> direction -> the view's local frame -> inside its square
+    frustum), so a view pitched up or down gets its true, curved footprint -
+    wider towards the pole - rather than a theta/phi rectangle, and a view
+    straddling the 0/360 seam comes out as the two pieces it really is.
+    Entries are (theta, phi) with `default_fov`, or (theta, phi, fov).
+    """
+    lon = ((np.arange(w) + 0.5) / w - 0.5) * 2 * np.pi
+    lat = (0.5 - (np.arange(h) + 0.5) / h) * np.pi
+    lon_g, lat_g = np.meshgrid(lon, lat)
+    directions = np.stack([np.cos(lat_g) * np.sin(lon_g), np.sin(lat_g), np.cos(lat_g) * np.cos(lon_g)], axis=-1)
+
+    masks = []
+    for entry in view_grid:
+        theta, phi = entry[0], entry[1]
+        fov = entry[2] if len(entry) == 3 else default_fov
+        local = directions @ _view_rotation(theta, phi)
+        step = np.tan(np.radians(fov) / 2.0)
+        z = local[..., 2]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            inside = (z > 1e-6) & (np.abs(local[..., 0]) <= step * z) & (np.abs(local[..., 1]) <= step * z)
+        masks.append(inside)
+    return masks
+
+
+
+_COVERAGE_COUNT_COLORS_BGR = [(40, 40, 230), (80, 190, 60), (0, 190, 255), (200, 80, 210)]
+_COVERAGE_COUNT_LABELS = ["not covered", "1 view", "2 views", "3+ views"]
+_COVERAGE_OUTLINE_PALETTE_BGR = [(255, 255, 255), (255, 255, 0), (180, 105, 255), (0, 255, 128), (0, 128, 255)]
 
 
 def render_coverage_grid_preview(
@@ -413,96 +447,96 @@ def render_coverage_grid_preview(
     crosses the panorama's own 0/360 seam is drawn as two separate
     rectangles rather than one wrapping incorrectly across the whole image.
 
-    Returns a BGR uint8 image (ready for `cv2.imwrite`) - never modifies
-    `node` or anything about it.
+    Returns a BGR uint8 image (ready for cv2.imwrite) of the panorama's own
+    (padded) size; never modifies `node`.
     """
     channel = channel or default_channel(node)
     panorama = reconstruct_panorama_for_channel(node, channel)
     if panorama is None:
         raise ValueError(f"Channel {channel!r} is not available for this scan.")
     h, w = panorama.shape[:2]
-
-    canvas = panorama.copy()
     if channel == "rgb":
-        # reconstruct_panorama_for_channel leaves "rgb" in RGB order but
-        # already converts "intensity"/"normals" to BGR (see its own
-        # docstring) - cv2.imwrite always wants BGR, so only "rgb" needs
-        # converting here.
-        canvas = cv2.cvtColor(canvas, cv2.COLOR_RGB2BGR)
-    canvas = np.ascontiguousarray(canvas)
+        # reconstruct_panorama_for_channel leaves "rgb" in RGB order but already
+        # converts "intensity"/"normals" to BGR; cv2 wants BGR.
+        panorama = cv2.cvtColor(panorama, cv2.COLOR_RGB2BGR)
+    gray = cv2.cvtColor(np.ascontiguousarray(panorama), cv2.COLOR_BGR2GRAY)
+    canvas = cv2.cvtColor((gray * 0.6).astype(np.uint8), cv2.COLOR_GRAY2BGR)
 
-    normalized = [
-        (entry[0], entry[1], entry[2]) if len(entry) == 3 else (entry[0], entry[1], default_fov)
-        for entry in view_grid
-    ]
+    entries = [(e[0], e[1], e[2] if len(e) == 3 else default_fov) for e in view_grid]
 
-    def theta_to_px(theta: float) -> float:
-        return ((theta / 360.0 + 0.5) % 1.0) * w
+    # Footprints on a reduced grid (fast even for a full-resolution panorama),
+    # scaled back up with nearest-neighbour.
+    scale = max(1, int(np.ceil(w / 1024)))
+    hs, ws = max(1, h // scale), max(1, w // scale)
+    masks = view_coverage_counts(hs, ws, entries, default_fov)
+    counts = np.sum(masks, axis=0) if masks else np.zeros((hs, ws), dtype=np.int64)
+    counts = cv2.resize(counts.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
 
-    def phi_to_py(phi: float) -> float:
-        frac = min(max(phi / 180.0 + 0.5, 0.0), 1.0)
-        return frac * h
+    scanned = real_scan_mask(node)
+    if scanned.shape != (h, w):
+        scanned = cv2.resize(scanned.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
 
-    def draw_tile(theta_c: float, phi_c: float, tile_fov: float, color: tuple, thickness: int) -> None:
-        half = tile_fov / 2.0
-        t_lo, t_hi = theta_c - half, theta_c + half
-        p_lo, p_hi = max(phi_c - half, -90.0), min(phi_c + half, 90.0)
-        y_top, y_bot = phi_to_py(p_hi), phi_to_py(p_lo)  # phi_to_py increases with phi
+    tint = np.zeros_like(canvas)
+    level = np.minimum(counts, 3)
+    for n, color in enumerate(_COVERAGE_COUNT_COLORS_BGR):
+        tint[scanned & (level == n)] = color
+    canvas[scanned] = cv2.addWeighted(canvas, 0.5, tint, 0.5, 0)[scanned]
 
-        n_samples = 96
-        xs = np.array([theta_to_px(t) for t in np.linspace(t_lo, t_hi, n_samples)])
+    font_scale = max(0.5, w / 3000.0)
+    thickness = max(1, int(round(2 * font_scale)))
+    distinct_fovs = sorted({round(e[2], 3) for e in entries})
+    outline_color = {f: _COVERAGE_OUTLINE_PALETTE_BGR[i % len(_COVERAGE_OUTLINE_PALETTE_BGR)]
+                     for i, f in enumerate(distinct_fovs)}
 
-        # A tile spanning the 0/360 seam shows up as a big backward jump in
-        # consecutive sampled x - split into separate contiguous runs rather
-        # than drawing one rectangle that would wrap across the whole image.
-        runs = []
-        start = 0
-        for i in range(1, len(xs)):
-            if xs[i] < xs[i - 1] - w / 2:
-                runs.append((xs[start], xs[i - 1]))
-                start = i
-        runs.append((xs[start], xs[-1]))
+    for index, ((theta, phi, fov), mask) in enumerate(zip(entries, masks), start=1):
+        color = outline_color[round(fov, 3)]
+        contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for contour in contours:
+            cv2.polylines(canvas, [(contour * scale).astype(np.int32)], True, color, thickness, cv2.LINE_AA)
+        cx = int(((theta / 360.0 + 0.5) % 1.0) * w)
+        cy = int(min(max(phi / 180.0 + 0.5, 0.0), 1.0) * h)
+        _put_outlined_text(canvas, str(index), (cx, cy), 1.3 * font_scale, color, thickness + 1, centered=True)
 
-        for xa, xb in runs:
-            x0, x1 = int(round(min(xa, xb))), int(round(max(xa, xb)))
-            cv2.rectangle(canvas, (x0, int(round(y_top))), (x1, int(round(y_bot))), color, thickness)
-
-    distinct_fovs = sorted({round(fov, 3) for _, _, fov in normalized})
-    colors = {
-        fov: _COVERAGE_PREVIEW_PALETTE_BGR[i % len(_COVERAGE_PREVIEW_PALETTE_BGR)]
-        for i, fov in enumerate(distinct_fovs)
-    }
-    # Widest FOV tiles drawn first (most likely to visually dominate/overlap
-    # others) so narrower, more numerous tiles still show up on top.
-    for theta_c, phi_c, tile_fov in sorted(normalized, key=lambda e: -e[2]):
-        draw_tile(theta_c, phi_c, tile_fov, colors[round(tile_fov, 3)], 2)
-
-    legend_y = 30
-    for fov_value in distinct_fovs:
-        count = sum(1 for _, _, f in normalized if round(f, 3) == fov_value)
-        text = f"{fov_value:.0f} deg FOV ({count} tile{'s' if count != 1 else ''})"
-        cv2.putText(canvas, text, (20, legend_y), cv2.FONT_HERSHEY_SIMPLEX, 1.0,
-                    colors[fov_value], 3, cv2.LINE_AA)
-        legend_y += 40
-
+    covered = float((counts[scanned] > 0).mean() * 100.0) if scanned.any() else 0.0
+    lines = [(color, label) for color, label in zip(_COVERAGE_COUNT_COLORS_BGR, _COVERAGE_COUNT_LABELS)]
+    lines += [(outline_color[f], f"{f:g} deg views ({sum(1 for e in entries if round(e[2], 3) == f)})")
+              for f in distinct_fovs]
+    _draw_coverage_legend(canvas, lines, f"scanned area covered: {covered:.1f}%", font_scale)
     return canvas
 
 
-def coverage_tile_boundary(h: int, w: int, theta: float, phi: float, fov: float,
-                            samples: int = 64) -> NDArray:
-    """
-    Traces one view crop's footprint as a closed polygon in equirectangular
-    panorama pixel space, for visualizing a coverage grid (see
-    compute_coverage_grid). Reuses get_face_projection_map itself (at a small
-    `samples` resolution) rather than re-deriving the rotation math, so the
-    traced boundary is always exactly what that crop would actually sample.
-    """
-    map_x, map_y = get_face_projection_map(h, w, theta, phi, samples, fov)
-    top = np.stack([map_x[0, :], map_y[0, :]], axis=1)
-    right = np.stack([map_x[:, -1], map_y[:, -1]], axis=1)
-    bottom = np.stack([map_x[-1, ::-1], map_y[-1, ::-1]], axis=1)
-    left = np.stack([map_x[::-1, 0], map_y[::-1, 0]], axis=1)
-    return np.concatenate([top, right, bottom, left], axis=0)
+def _put_outlined_text(image: NDArray, text: str, org: tuple[int, int], scale: float, color: tuple,
+                       thickness: int, centered: bool = False) -> None:
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    if centered:
+        (tw, th), _ = cv2.getTextSize(text, font, scale, thickness)
+        org = (org[0] - tw // 2, org[1] + th // 2)
+    cv2.putText(image, text, org, font, scale, (0, 0, 0), thickness + 3, cv2.LINE_AA)
+    cv2.putText(image, text, org, font, scale, color, thickness, cv2.LINE_AA)
+
+
+def _draw_coverage_legend(image: NDArray, lines: list[tuple[tuple, str]], footer: str, font_scale: float) -> None:
+    """Swatch + label per line, then a footer, on a dark box in the top-left corner."""
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = 0.9 * font_scale
+    thickness = max(1, int(round(2 * font_scale)))
+    line_h = int(40 * font_scale)
+    pad = int(15 * font_scale)
+    swatch = int(26 * font_scale)
+    texts = [label for _, label in lines] + [footer]
+    text_w = max(cv2.getTextSize(t, font, scale, thickness)[0][0] for t in texts)
+    box_w = pad * 3 + swatch + text_w
+    box_h = pad * 2 + line_h * len(texts)
+    x0, y0 = pad, pad
+    region = image[y0:y0 + box_h, x0:x0 + box_w]
+    region[:] = (region * 0.25).astype(np.uint8)
+    for i, (color, label) in enumerate(lines):
+        top = y0 + pad + i * line_h
+        cv2.rectangle(image, (x0 + pad, top), (x0 + pad + swatch, top + swatch), color, -1)
+        cv2.putText(image, label, (x0 + pad * 2 + swatch, top + swatch - 4), font, scale, (255, 255, 255),
+                    thickness, cv2.LINE_AA)
+    cv2.putText(image, footer, (x0 + pad, y0 + pad + len(lines) * line_h + swatch - 4), font, scale,
+                (255, 255, 255), thickness, cv2.LINE_AA)
 
 
 def pad_img(img: NDArray, fill_value: int = 255) -> NDArray:
@@ -567,9 +601,6 @@ def reconstruct_panorama_for_channel(node: ScanNode, channel: Channel, pad: bool
         hidden_2d = mapper.map_to_panorama(node.hidden_mask, default_value=False)
         if hidden_2d.any():
             image_data[hidden_2d] = [0, 0, 0]
-            if node.fill_holes:
-                inpaint_mask = (hidden_2d * 255).astype(np.uint8)
-                image_data = cv2.inpaint(image_data, inpaint_mask, inpaintRadius=3, flags=cv2.INPAINT_TELEA)
 
     return pad_img(image_data, fill_value=0) if pad else image_data
 
@@ -652,15 +683,7 @@ def project_point_into_view(node: ScanNode, ctx: ProjectionContext, point_index:
         np.cos(lat) * np.cos(lon),
     ])
 
-    theta_rad = np.radians(ctx.rot_theta_deg)
-    phi_rad = np.radians(ctx.rot_phi_deg)
-    r_theta = np.array([[np.cos(theta_rad), 0, np.sin(theta_rad)],
-                         [0, 1, 0],
-                         [-np.sin(theta_rad), 0, np.cos(theta_rad)]])
-    r_phi = np.array([[1, 0, 0],
-                       [0, np.cos(phi_rad), -np.sin(phi_rad)],
-                       [0, np.sin(phi_rad), np.cos(phi_rad)]])
-    r = r_theta @ r_phi
+    r = _view_rotation(ctx.rot_theta_deg, ctx.rot_phi_deg)
 
     # get_face_projection_map computes vec_rot = vec @ r.T, so the inverse
     # (r is orthogonal, r.T == r^-1) is vec = vec_rot @ r.
