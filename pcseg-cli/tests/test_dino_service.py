@@ -21,7 +21,7 @@ def test_dino_service_forces_offline_mode_by_default(monkeypatch):
 
     import importlib
 
-    import pcseg.services.dino_service as dino_service
+    import services.dino_service as dino_service
     importlib.reload(dino_service)
 
     assert os.environ["HF_HUB_OFFLINE"] == "1"
@@ -33,7 +33,7 @@ def test_dino_service_does_not_override_an_explicit_user_choice(monkeypatch):
 
     import importlib
 
-    import pcseg.services.dino_service as dino_service
+    import services.dino_service as dino_service
     importlib.reload(dino_service)
 
     assert os.environ["HF_HUB_OFFLINE"] == "0"

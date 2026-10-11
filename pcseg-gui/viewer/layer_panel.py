@@ -42,7 +42,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from pcseg_gui.layers import Layer, LayerInstance
+from layers import Layer, LayerInstance
 
 
 class _LayerHeader(QWidget):

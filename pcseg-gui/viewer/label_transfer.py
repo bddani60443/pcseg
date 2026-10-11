@@ -38,7 +38,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from pcseg_gui.viewer.density_decimation import DEFAULT_VOXEL_SIZE, pack_voxel_ids
+from viewer.density_decimation import DEFAULT_VOXEL_SIZE, pack_voxel_ids
 
 __all__ = ["DEFAULT_VOXEL_SIZE", "VoxelOwnerMap", "build_voxel_owner_map", "transfer_owners"]
 

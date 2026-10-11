@@ -12,15 +12,15 @@ point in a 2x2 block the label of that block's low-res corner sample.
 """
 import numpy as np
 
-from pcseg.core.classification import upsample_classification
-from pcseg.core.mapping import IndexMapper
-from pcseg.core.scan_node import ScanNode
+from core.classification import upsample_classification
+from core.mapping import IndexMapper
+from core.scan_node import ScanNode
 
 
 def _make_node(rows_dec: np.ndarray, cols_dec: np.ndarray, row_max: int, col_max: int,
                 decimation_step: int) -> ScanNode:
     """`rows_dec`/`cols_dec` are already-decimated grid coordinates (i.e. original // decimation_step),
-    matching what pcseg.io.e57_loader._prepare_grid_info produces."""
+    matching what fileio.e57_loader._prepare_grid_info produces."""
     n = len(rows_dec)
     mapper = IndexMapper({"row": rows_dec, "col": cols_dec}, row_max=row_max - 1, col_max=col_max - 1)
     return ScanNode(

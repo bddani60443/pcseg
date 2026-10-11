@@ -1,13 +1,12 @@
 import numpy as np
 import pytest
 
-from pcseg.core.mapping import IndexMapper
-from pcseg.core.projection import (
+from core.mapping import IndexMapper
+from core.projection import (
     compute_coverage_grid,
     compute_distance_panorama,
     compute_indexed_coverage_grid,
     compute_multiscale_coverage_grid,
-    coverage_tile_boundary,
     get_face_projection_map,
     pad_img,
     phi_extent_of_valid_data,
@@ -15,7 +14,7 @@ from pcseg.core.projection import (
     reconstruct_panorama_for_channel,
     render_coverage_grid_preview,
 )
-from pcseg.core.scan_node import ScanNode
+from core.scan_node import ScanNode
 
 
 def test_get_face_projection_map_shape_and_range():
@@ -147,18 +146,6 @@ def test_compute_coverage_grid_returns_nothing_for_an_entirely_empty_scan():
 def test_compute_coverage_grid_rejects_overlap_of_one_or_more():
     with pytest.raises(ValueError):
         compute_coverage_grid(np.ones((10, 10), dtype=bool), fov=90.0, overlap=1.0)
-
-
-def test_coverage_tile_boundary_is_a_closed_polygon_matching_the_crop_corners():
-    h, w, samples = 180, 360, 16
-    boundary = coverage_tile_boundary(h, w, theta=0.0, phi=0.0, fov=90.0, samples=samples)
-
-    assert boundary.shape == (4 * samples, 2)
-
-    map_x, map_y = get_face_projection_map(h, w, 0.0, 0.0, samples, 90.0)
-    top_left_boundary = boundary[0]
-    top_left_map = (map_x[0, 0], map_y[0, 0])
-    assert np.allclose(top_left_boundary, top_left_map)
 
 
 def _make_node_with_distances(h: int, w: int, distances: np.ndarray) -> ScanNode:

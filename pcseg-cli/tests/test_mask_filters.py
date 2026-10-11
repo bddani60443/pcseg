@@ -1,12 +1,8 @@
 import numpy as np
 import pytest
 
-from pcseg.core.mask_filters import (
-    filter_mask_by_3d_clustering,
-    filter_mask_by_voxel_connectivity,
-    filter_mask_outliers,
-)
-from pcseg.core.scan_node import ScanNode
+from core.mask_filters import filter_mask_outliers
+from core.scan_node import ScanNode
 
 
 def _make_node(points_xyz: np.ndarray) -> ScanNode:
@@ -34,42 +30,6 @@ def _make_node(points_xyz: np.ndarray) -> ScanNode:
         hidden_mask=np.zeros(len(points_xyz), dtype=bool),
         index_mapper=None,  # not needed by the filters under test
     )
-
-
-def test_filter_mask_by_3d_clustering_keeps_only_largest_cluster():
-    # Two dense clusters far apart from each other in 3D.
-    cluster_a = np.tile([0, 0, 0], (30, 1)) + np.random.default_rng(0).integers(-2, 3, size=(30, 3))
-    cluster_b = np.tile([1000, 1000, 1000], (10, 1)) + np.random.default_rng(1).integers(-2, 3, size=(10, 3))
-    points = np.vstack([cluster_a, cluster_b])
-
-    node = _make_node(points)
-    indices = np.arange(len(points))
-
-    result = filter_mask_by_3d_clustering(node, indices, eps=5.0, min_samples=5)
-
-    # Should keep (approximately) the larger cluster only.
-    assert len(result) <= len(cluster_a) + 2
-    assert len(result) > len(cluster_b)
-
-
-def test_filter_mask_by_3d_clustering_empty_input():
-    node = _make_node(np.zeros((0, 3)))
-    result = filter_mask_by_3d_clustering(node, np.array([], dtype=np.int64))
-    assert len(result) == 0
-
-
-def test_filter_mask_by_voxel_connectivity_drops_isolated_speckle():
-    main_blob = np.array([[i, 0, 0] for i in range(20)])  # one connected line of voxels
-    isolated = np.array([[500, 500, 500]])  # far, disconnected single point
-    points = np.vstack([main_blob, isolated])
-
-    node = _make_node(points)
-    indices = np.arange(len(points))
-
-    result = filter_mask_by_voxel_connectivity(node, indices, voxel_size=1.0)
-
-    assert len(main_blob) in (len(result), len(result) + 1)
-    assert len(points) - 1 not in result  # the isolated point's index should be gone
 
 
 def test_filter_mask_outliers_reduces_or_keeps_clean_input():

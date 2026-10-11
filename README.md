@@ -331,7 +331,7 @@ pytest
 A 3D viewer for `pcseg` point clouds that can also run `pcseg`'s
 prompt-driven detection (DINO+SAM2) or single-point picking directly against
 the loaded scan and draw the result back onto the same view - in-process,
-via `pcseg.services`, no subprocess and no export/reopen roundtrip. Results
+via `services`, no subprocess and no export/reopen roundtrip. Results
 accumulate as a reorderable stack of layers (see
 "Layers" below) that you can edit and export. Built for producing figures
 and quick interactive exploration; not a persistent-project tool - the
@@ -348,7 +348,7 @@ pip install -e .
 
 **Both must go into the SAME environment** - this app imports `pcseg`
 in-process (`pcseg_gui.viewer.viewer_widget` calls straight into
-`pcseg.services`, no subprocess), so `pcseg` and `pcseg-gui` living in two
+`services`, no subprocess), so `pcseg` and `pcseg-gui` living in two
 different venvs simply won't see each other. The venv itself isn't strictly
 required, but is recommended, especially with more than one Python
 version/install on the machine (common on Windows) - see
@@ -744,7 +744,7 @@ either handle, whichever's more convenient (the fields are plain text
 entry, no up/down stepper arrows - the slider is the primary way to adjust
 them). Checking the box does two things together: crops what's drawn in the
 3D view to that wedge, and - the actual point of the feature - restricts
-what Run's own sweep actually covers, via `pcseg.core.projection`'s
+what Run's own sweep actually covers, via `core.projection`'s
 `theta_range`/`phi_range`. A yellow outline traced through real scanned
 points shows the current wedge.
 
@@ -1035,7 +1035,7 @@ choice was made).
 The 3D view's colors and the exported classification are always the SAME
 composed result: on any change (new layer, reorder, visibility, instance
 include/exclude), the whole stack is recomputed from scratch via
-`pcseg.core.classification.compose_layers` - a point not covered by any
+`core.classification.compose_layers` - a point not covered by any
 currently-active layer/instance always reverts to unclassified, it's never
 left over from a previous state.
 

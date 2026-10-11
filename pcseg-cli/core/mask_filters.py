@@ -9,7 +9,7 @@ from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
 from sklearn.neighbors import LocalOutlierFactor
 
-from pcseg.core.scan_node import ScanNode
+from core.scan_node import ScanNode
 
 _LOF_SUBSAMPLE_THRESHOLD = 200_000
 

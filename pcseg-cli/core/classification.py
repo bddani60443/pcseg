@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from pcseg.core.scan_node import ScanNode
+from core.scan_node import ScanNode
 
 
 def assign_classifications(node: ScanNode, indices_by_label: dict[str, np.ndarray]) -> None:

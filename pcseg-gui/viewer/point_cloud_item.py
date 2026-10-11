@@ -18,10 +18,10 @@ from OpenGL.GL import shaders
 from OpenGL.raw.GL.VERSION.GL_2_0 import (
     glVertexAttribPointer as raw_glVertexAttribPointer,
 )
-from pcseg.core.scan_node import ScanNode
+from core.scan_node import ScanNode
 from pyqtgraph.opengl.GLGraphicsItem import GLGraphicsItem
 
-from pcseg_gui.viewer import density_decimation
+from viewer import density_decimation
 
 VERTEX_SHADER = """
 #version 130
@@ -620,7 +620,7 @@ class ShaderPointCloudItem(GLGraphicsItem):
 
         `entries` is an ORDERED (label, indices, color) sequence, applied in
         exactly the given order (earlier first, later wins any overlap) - the
-        same ordering contract as pcseg.core.classification.compose_layers, so
+        same ordering contract as core.classification.compose_layers, so
         this always matches what node.point_classes/an export would say. Unlike
         a {label: indices} dict, this allows the same label to appear more than
         once (two separate layers can legitimately both be named "window").

@@ -7,16 +7,16 @@ from typing import Callable
 import cv2
 import numpy as np
 
-from pcseg.core.colors import generate_label_color
-from pcseg.core.merge import mask_touches_border, merge_by_3d_iou_iterative
-from pcseg.core.projection import (
+from core.colors import generate_label_color
+from core.merge import mask_touches_border, merge_by_3d_iou_iterative
+from core.projection import (
     Channel,
     get_face_projection_map,
     real_point_mask,
     reconstruct_panorama_for_channel,
 )
-from pcseg.core.scan_node import ScanNode
-from pcseg.exceptions import SweepCancelled
+from core.scan_node import ScanNode
+from exceptions import SweepCancelled
 
 # Interface an automatic-segmentation backend must satisfy: given one RGB (or
 # false-color) image, propose object masks with no prompt of any kind. SAM2 is

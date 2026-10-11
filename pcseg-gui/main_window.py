@@ -18,13 +18,13 @@ from PyQt6.QtWidgets import (
     QSpinBox,
 )
 
-from pcseg_gui.crash_log import LOG_FILE
-from pcseg_gui.loaders import load_point_cloud
-from pcseg_gui.log_forwarder import LogForwarder, attach_log_forwarder
-from pcseg_gui.log_panel import LogPanel
-from pcseg_gui.models_dialog import ModelsDialog
-from pcseg_gui.viewer.viewer_widget import Viewer3DWidget
-from pcseg_gui.workers import run_in_background
+from crash_log import LOG_FILE
+from loaders import load_point_cloud
+from log_forwarder import LogForwarder, attach_log_forwarder
+from log_panel import LogPanel
+from models_dialog import ModelsDialog
+from viewer.viewer_widget import Viewer3DWidget
+from workers import run_in_background
 
 
 class _LoadOptionsDialog(QDialog):
@@ -405,7 +405,7 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard_current_project():
             return
 
-        from pcseg_gui import project_file
+        import project_file
 
         try:
             manifest = project_file.load_project_manifest(path)

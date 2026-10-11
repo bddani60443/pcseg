@@ -4,7 +4,7 @@ import inspect
 import logging
 from typing import Any, Callable
 
-from pcseg.exceptions import SweepCancelled
+from exceptions import SweepCancelled
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
 
@@ -50,7 +50,7 @@ def run_in_background(
     `progress_callback` keyword argument, one is injected automatically that
     forwards to `on_progress` on the main thread.
 
-    If `fn` raises `pcseg.exceptions.SweepCancelled` (a Run Prompt/Auto-Segment
+    If `fn` raises `exceptions.SweepCancelled` (a Run Prompt/Auto-Segment
     sweep's own cooperative-cancellation signal, from its `cancel_check`
     callback returning True), `on_cancelled` fires instead of `on_error` - a
     deliberate user cancellation isn't a failure, callers shouldn't show an

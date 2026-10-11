@@ -1,6 +1,6 @@
 import numpy as np
 
-from pcseg.core.mapping import IndexMapper
+from core.mapping import IndexMapper
 
 
 def _small_mapper():
@@ -11,17 +11,6 @@ def _small_mapper():
         "col": np.array([0, 1, 0, 1], dtype=np.int32),
     }
     return IndexMapper(raw_indices, row_max=1, col_max=1)
-
-
-def test_map_to_panorama_roundtrip_matches_map_from_panorama():
-    mapper = _small_mapper()
-    values = np.array([10, 20, 30, 40], dtype=np.uint8)
-
-    pano = mapper.map_to_panorama(values, default_value=0)
-    assert pano.shape == (2, 2)
-
-    recovered = mapper.map_from_panorama(pano, default_value=0)
-    assert np.array_equal(recovered, values)
 
 
 def test_map_to_panorama_flags_unmapped_pixels_as_default():

@@ -8,7 +8,7 @@ FileNotFoundError deep inside model loading with no clue what went wrong.
 """
 import os
 
-from pcseg.paths import find_project_root
+from paths import find_project_root
 
 
 def test_find_project_root_prefers_the_file_based_root_when_it_has_the_marker(tmp_path):

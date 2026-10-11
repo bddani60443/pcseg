@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from pcseg.paths import find_project_root
+from paths import find_project_root
 
 # Hydra resolves this one relative to the installed sam2 package's own config store
 # (see build_sam2's compose() call), not the filesystem - CWD-independent already.

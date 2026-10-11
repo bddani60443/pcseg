@@ -32,7 +32,7 @@ def main() -> int:
         print(f"pcseg-view needs the optional GUI dependencies (missing: {', '.join(missing)}).\n"
               f"Install them from the pcseg directory with:  pip install -e \".[gui]\"", file=sys.stderr)
         return 1
-    from pcseg_gui.main import main as run_viewer
+    from main import main as run_viewer
 
     return run_viewer()
 

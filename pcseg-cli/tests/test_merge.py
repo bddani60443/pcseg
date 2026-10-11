@@ -1,6 +1,6 @@
 import numpy as np
 
-from pcseg.core.merge import mask_touches_border, merge_by_3d_iou, merge_by_3d_iou_iterative
+from core.merge import mask_touches_border, merge_by_3d_iou, merge_by_3d_iou_iterative
 
 
 def test_empty_input():

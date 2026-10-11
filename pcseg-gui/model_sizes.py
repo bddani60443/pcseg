@@ -23,18 +23,18 @@ _root: Path | None = None
 
 def project_root() -> Path:
     """The pcseg-cli project root (where scripts/ and external/ live), found
-    the same way the CLI's own model services find it (pcseg.paths.
+    the same way the CLI's own model services find it (paths.
     find_project_root: the source tree of an editable install, else the
     current directory or its sibling pcseg-cli/) - so the viewer and the CLI
     always agree on where the downloaded weights are. Anchored on the empty
-    `pcseg.services` package, not dino_service.py/sam_service.py - see module
+    `services` package, not dino_service.py/sam_service.py - see module
     docstring."""
     global _root
     if _root is None:
-        from pcseg.paths import find_project_root
+        from paths import find_project_root
 
-        import pcseg.services
-        _root = find_project_root("scripts/install_segmentation_backends.sh", pcseg.services.__file__)
+        import services
+        _root = find_project_root("scripts/install_segmentation_backends.sh", services.__file__)
     return _root
 
 

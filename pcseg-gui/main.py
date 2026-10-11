@@ -9,6 +9,8 @@ Usage:
 """
 from __future__ import annotations
 
+__version__ = "0.1.0"
+
 import argparse
 import logging
 import platform
@@ -19,8 +21,8 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QSurfaceFormat
 from PyQt6.QtWidgets import QApplication
 
-from pcseg_gui.crash_log import install as install_crash_logging
-from pcseg_gui.main_window import MainWindow
+from crash_log import install as install_crash_logging
+from main_window import MainWindow
 
 
 def _configure_gl_backend() -> None:

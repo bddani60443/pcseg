@@ -8,23 +8,23 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from pcseg.core.colors import generate_label_color
-from pcseg.core.mask_filters import (
+from core.colors import generate_label_color
+from core.mask_filters import (
     _filter_outliers_core,
     _to_points_3d,
     filter_mask_outliers,
 )
-from pcseg.core.merge import merge_by_3d_iou_iterative
-from pcseg.core.projection import (
+from core.merge import merge_by_3d_iou_iterative
+from core.projection import (
     Channel,
     get_face_projection_map,
     real_point_mask,
     reconstruct_panorama_for_channel,
 )
-from pcseg.core.scan_node import ScanNode
-from pcseg.exceptions import SweepCancelled
-from pcseg.services.dino_service import DinoService
-from pcseg.services.sam_service import SamService
+from core.scan_node import ScanNode
+from exceptions import SweepCancelled
+from services.dino_service import DinoService
+from services.sam_service import SamService
 
 
 @dataclass

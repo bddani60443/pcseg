@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from pcseg_gui.layers import Layer, LayerInstance
+from layers import Layer, LayerInstance
 
 FORMAT_VERSION = 1
 

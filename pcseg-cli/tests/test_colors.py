@@ -5,7 +5,7 @@ with Python's builtin hash(), which is randomly salted per interpreter process
 different color on every run, defeating the point of a "same label, same color"
 preview overlay. Must use a hash that's stable across processes.
 
-generate_label_color() lives in pcseg.core.colors (pure hashlib/numpy, no torch)
+generate_label_color() lives in core.colors (pure hashlib/numpy, no torch)
 - it originally lived in dino_service.py, but that made pcseg_gui/loaders.py (a
 plain LAS-classification-coloring caller with nothing to do with DINO) drag torch
 in just by importing it, breaking pcseg-gui's plain-viewer-with-no-segmentation-
@@ -16,12 +16,12 @@ import os
 import subprocess
 import sys
 
-from pcseg.core.colors import generate_label_color
+from core.colors import generate_label_color
 
 
 def _color_in_subprocess(hash_seed: str) -> tuple:
     script = (
-        "from pcseg.core.colors import generate_label_color; "
+        "from core.colors import generate_label_color; "
         "print(generate_label_color(['window'])[0])"
     )
     env = os.environ.copy()

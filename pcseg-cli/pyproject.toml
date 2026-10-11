@@ -72,10 +72,13 @@ dev = [
 ]
 
 [project.scripts]
-pcseg = "pcseg.cli:main"
+pcseg = "cli:main"
+
+[tool.setuptools]
+py-modules = ["cli", "exceptions", "paths"]
 
 [tool.setuptools.packages.find]
-where = ["src"]
+include = ["core*", "fileio*", "services*"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["."]

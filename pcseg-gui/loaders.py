@@ -5,9 +5,9 @@ from pathlib import Path
 
 import laspy
 import numpy as np
-from pcseg.core.colors import generate_label_color
-from pcseg.core.mapping import IndexMapper
-from pcseg.core.scan_node import ScanNode
+from core.colors import generate_label_color
+from core.mapping import IndexMapper
+from core.scan_node import ScanNode
 
 
 def load_point_cloud(path: str, decimation: int = 2) -> ScanNode:
@@ -20,7 +20,7 @@ def load_point_cloud(path: str, decimation: int = 2) -> ScanNode:
 
 
 def load_e57(path: str, decimation: int = 2) -> ScanNode:
-    from pcseg.io.e57_loader import ScanData
+    from fileio.e57_loader import ScanData
 
     return ScanData(path, decimation_step=decimation).load()
 

@@ -8,8 +8,8 @@ import cv2
 import laspy
 import numpy as np
 
-from pcseg.core.projection import Channel, reconstruct_panorama_for_channel
-from pcseg.core.scan_node import ScanNode
+from core.projection import Channel, reconstruct_panorama_for_channel
+from core.scan_node import ScanNode
 
 
 def export_to_las(node: ScanNode, output_filepath: str, mask: np.ndarray | None = None, progress_callback=None) -> str:
@@ -192,7 +192,7 @@ def compose_layers_preview_image(node: ScanNode, output_filepath: str,
     sync with compose_layers's compositing order so a preview image and its
     matching LAS/E57 export agree on which layer wins any given point.
     """
-    from pcseg.core.projection import default_channel, pad_img
+    from core.projection import default_channel, pad_img
 
     channel = base_channel or default_channel(node)
     # pad=False: keep the same (mapper.h, mapper.w) shape map_to_panorama produces,

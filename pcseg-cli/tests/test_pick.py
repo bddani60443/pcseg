@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 
-from pcseg.cli import build_parser
-from pcseg.core.projection import find_nearest_point_index
-from pcseg.core.scan_node import ScanNode
+from cli import build_parser
+from core.projection import find_nearest_point_index
+from core.scan_node import ScanNode
 
 
 def _make_node(points_xyz: np.ndarray) -> ScanNode:

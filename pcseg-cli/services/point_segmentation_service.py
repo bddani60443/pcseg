@@ -8,16 +8,16 @@ from datetime import datetime
 import cv2
 import numpy as np
 
-from pcseg.core.colors import generate_label_color
-from pcseg.core.projection import (
+from core.colors import generate_label_color
+from core.projection import (
     Channel,
     default_channel,
     extract_perspective_view,
     project_point_into_view,
     real_point_mask,
 )
-from pcseg.core.scan_node import ScanNode
-from pcseg.services.sam_service import SamService
+from core.scan_node import ScanNode
+from services.sam_service import SamService
 
 
 @dataclass

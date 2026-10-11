@@ -29,6 +29,8 @@ Examples:
 """
 from __future__ import annotations
 
+__version__ = "0.1.1"
+
 import argparse
 import logging
 import sys
@@ -36,7 +38,7 @@ from pathlib import Path
 
 import numpy as np
 
-from pcseg.core.projection import default_channel
+from core.projection import default_channel
 
 CHANNEL_CHOICES = ["auto", "rgb", "intensity", "normals"]
 AUTO_BACKEND_CHOICES = ["sam2"]
@@ -244,7 +246,7 @@ def _validate_output_extensions(outputs: list[str]) -> bool:
 
 
 def _dispatch_output(node, result, output_path: str, preview_channel, export_node=None, export_mask=None) -> str:
-    from pcseg.io.exporters import (
+    from fileio.exporters import (
         export_mask_preview_image,
         export_to_e57,
         export_to_las,
@@ -269,7 +271,7 @@ def _dispatch_output(node, result, output_path: str, preview_channel, export_nod
 
 
 def _load_scan_at(path: str, decimation: int):
-    from pcseg.io.e57_loader import ScanData
+    from fileio.e57_loader import ScanData
 
     logging.info(f"Loading {path} (decimation={decimation})...")
     node = ScanData(path, decimation_step=decimation).load()
@@ -283,7 +285,7 @@ def _load_scan(args: argparse.Namespace):
 
 def _finish(node, result, args) -> int:
     """Shared tail: classify, (optionally upsample,) export, for whichever command produced `result`."""
-    from pcseg.core.classification import assign_classifications
+    from core.classification import assign_classifications
 
     if not result.instances:
         logging.warning("No objects found. Nothing to export.")
@@ -294,7 +296,7 @@ def _finish(node, result, args) -> int:
     export_node, export_mask = None, None
     export_decimation = getattr(args, "export_decimation", None)
     if export_decimation is not None and export_decimation != args.decimation:
-        from pcseg.core.classification import upsample_classification
+        from core.classification import upsample_classification
 
         logging.info(f"Upsampling classification from decimation={args.decimation} to {export_decimation}...")
         export_node = _load_scan_at(args.input, export_decimation)
@@ -321,13 +323,13 @@ def run_command(args: argparse.Namespace) -> int:
     sam_channel = _resolve_channel(node, args.sam_channel)
     logging.info(f"DINO channel: {dino_channel} | SAM2 channel: {sam_channel}")
 
-    from pcseg.services.dino_service import DEFAULT_CHECKPOINT_PATH as DINO_CKPT
-    from pcseg.services.dino_service import DEFAULT_CONFIG_PATH as DINO_CFG
-    from pcseg.services.dino_service import DinoService
-    from pcseg.services.sam_service import DEFAULT_CHECKPOINT_PATH as SAM_CKPT
-    from pcseg.services.sam_service import DEFAULT_CONFIG_PATH as SAM_CFG
-    from pcseg.services.sam_service import SamService
-    from pcseg.services.segmentation_service import SegmentationService
+    from services.dino_service import DEFAULT_CHECKPOINT_PATH as DINO_CKPT
+    from services.dino_service import DEFAULT_CONFIG_PATH as DINO_CFG
+    from services.dino_service import DinoService
+    from services.sam_service import DEFAULT_CHECKPOINT_PATH as SAM_CKPT
+    from services.sam_service import DEFAULT_CONFIG_PATH as SAM_CFG
+    from services.sam_service import SamService
+    from services.segmentation_service import SegmentationService
 
     device = None if args.device == "auto" else args.device
     dino = DinoService(config_path=args.dino_config or DINO_CFG, checkpoint_path=args.dino_checkpoint or DINO_CKPT, device=device)
@@ -350,7 +352,7 @@ def run_command(args: argparse.Namespace) -> int:
 
 
 def _build_coverage_grid(node, args: argparse.Namespace) -> list[tuple[float, float]]:
-    from pcseg.core.projection import compute_coverage_grid, real_scan_mask
+    from core.projection import compute_coverage_grid, real_scan_mask
 
     valid_mask = real_scan_mask(node)
     phi_range = tuple(args.phi_range) if args.phi_range else None
@@ -360,7 +362,7 @@ def _build_coverage_grid(node, args: argparse.Namespace) -> list[tuple[float, fl
 
 
 def _build_indexed_coverage_grid(node, args: argparse.Namespace) -> tuple[list[tuple[int, int, float, float]], int]:
-    from pcseg.core.projection import compute_indexed_coverage_grid, real_scan_mask
+    from core.projection import compute_indexed_coverage_grid, real_scan_mask
 
     valid_mask = real_scan_mask(node)
     phi_range = tuple(args.phi_range) if args.phi_range else None
@@ -378,10 +380,10 @@ def auto_segment_command(args: argparse.Namespace) -> int:
     channel = _resolve_channel(node, args.channel)
     logging.info(f"Backend: {args.backend} | channel: {channel}")
 
-    from pcseg.services.auto_segmentation_service import AutoSegmentationService
-    from pcseg.services.sam_service import DEFAULT_CHECKPOINT_PATH as SAM_CKPT
-    from pcseg.services.sam_service import DEFAULT_CONFIG_PATH as SAM_CFG
-    from pcseg.services.sam_service import SamService
+    from services.auto_segmentation_service import AutoSegmentationService
+    from services.sam_service import DEFAULT_CHECKPOINT_PATH as SAM_CKPT
+    from services.sam_service import DEFAULT_CONFIG_PATH as SAM_CFG
+    from services.sam_service import SamService
 
     device = None if args.device == "auto" else args.device
 
@@ -417,7 +419,7 @@ def pick_segment_command(args: argparse.Namespace) -> int:
 
     node = _load_scan(args)
 
-    from pcseg.core.projection import find_nearest_point_index
+    from core.projection import find_nearest_point_index
 
     if args.point_index is not None:
         point_index = args.point_index
@@ -427,10 +429,10 @@ def pick_segment_command(args: argparse.Namespace) -> int:
 
     channel = _resolve_channel(node, args.channel)
 
-    from pcseg.services.point_segmentation_service import segment_at_point
-    from pcseg.services.sam_service import DEFAULT_CHECKPOINT_PATH as SAM_CKPT
-    from pcseg.services.sam_service import DEFAULT_CONFIG_PATH as SAM_CFG
-    from pcseg.services.sam_service import SamService
+    from services.point_segmentation_service import segment_at_point
+    from services.sam_service import DEFAULT_CHECKPOINT_PATH as SAM_CKPT
+    from services.sam_service import DEFAULT_CONFIG_PATH as SAM_CFG
+    from services.sam_service import SamService
 
     device = None if args.device == "auto" else args.device
     sam = SamService(config_path=args.sam_config or SAM_CFG, checkpoint_path=args.sam_checkpoint or SAM_CKPT, device=device)

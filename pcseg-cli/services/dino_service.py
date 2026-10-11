@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from pcseg.paths import find_project_root
+from paths import find_project_root
 
 # GroundingDINO's text encoder is a plain HuggingFace `bert-base-uncased` (see
 # external/GroundingDINO-external/groundingdino/config/*.py's text_encoder_type) -

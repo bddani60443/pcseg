@@ -9,8 +9,8 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from pcseg.core.mapping import IndexMapper
-from pcseg.core.scan_node import ScanNode
+from core.mapping import IndexMapper
+from core.scan_node import ScanNode
 
 Channel = Literal["rgb", "intensity", "normals"]
 

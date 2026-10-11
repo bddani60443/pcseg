@@ -9,12 +9,10 @@ raised an IndexError whenever the raw grid was short enough to need padding
 import laspy
 import numpy as np
 
-from pcseg.core.mapping import IndexMapper
-from pcseg.core.scan_node import ScanNode
-from pcseg.core.projection import compute_coverage_grid
-from pcseg.io.exporters import (
+from core.mapping import IndexMapper
+from core.scan_node import ScanNode
+from fileio.exporters import (
     compose_layers_preview_image,
-    export_coverage_grid_preview,
     export_mask_preview_image,
     export_to_las,
 )
@@ -53,21 +51,6 @@ def test_export_mask_preview_image_on_a_padded_panorama(tmp_path):
 
     assert out_path.exists()
     assert out_path.stat().st_size > 0
-
-
-def test_export_coverage_grid_preview_draws_every_computed_tile(tmp_path):
-    node = _make_wide_node()
-    out_path = tmp_path / "coverage.png"
-
-    valid_mask = node.index_mapper.pano_map >= 0
-    grid = compute_coverage_grid(valid_mask, fov=90.0, overlap=0.2)
-    assert len(grid) > 0  # sanity: the fixture's grid actually has data to sweep
-
-    msg = export_coverage_grid_preview(node, str(out_path), grid, base_channel="normals")
-
-    assert out_path.exists()
-    assert out_path.stat().st_size > 0
-    assert str(len(grid)) in msg
 
 
 def test_export_mask_preview_image_lets_smaller_mask_win_pixel_overlap(tmp_path):

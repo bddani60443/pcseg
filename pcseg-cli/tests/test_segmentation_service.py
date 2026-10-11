@@ -20,11 +20,11 @@ import pytest
 
 pytest.importorskip("torch")
 
-from pcseg.core.mapping import IndexMapper  # noqa: E402
-from pcseg.core.projection import get_face_projection_map  # noqa: E402
-from pcseg.core.scan_node import ScanNode  # noqa: E402
-from pcseg.exceptions import SweepCancelled  # noqa: E402
-from pcseg.services.segmentation_service import (  # noqa: E402
+from core.mapping import IndexMapper  # noqa: E402
+from core.projection import get_face_projection_map  # noqa: E402
+from core.scan_node import ScanNode  # noqa: E402
+from exceptions import SweepCancelled  # noqa: E402
+from services.segmentation_service import (  # noqa: E402
     DetectedInstance,
     SegmentationService,
     _box_angular_extent,
@@ -840,7 +840,7 @@ def test_run_outlier_filtering_parallel_path_matches_serial_results():
 
     parallel_results = _run_outlier_filtering(node, [inst_a, inst_b])
 
-    from pcseg.core.mask_filters import filter_mask_outliers as _fmo
+    from core.mask_filters import filter_mask_outliers as _fmo
     expected_a = _fmo(node, inst_a.indices)
     expected_b = _fmo(node, inst_b.indices)
 
@@ -855,7 +855,7 @@ def test_run_outlier_filtering_stays_serial_below_the_instance_count_threshold()
     node = _make_big_node(6000, seed=2)
     inst = DetectedInstance(indices=np.arange(0, 6000), label="window", score=0.8, color=(1, 1, 1))
 
-    with patch("pcseg.services.segmentation_service.ProcessPoolExecutor",
+    with patch("services.segmentation_service.ProcessPoolExecutor",
                side_effect=AssertionError("pool should never be constructed for a single big instance")):
         results = _run_outlier_filtering(node, [inst])
 
@@ -870,7 +870,7 @@ def test_run_outlier_filtering_small_instances_never_touch_the_pool():
         DetectedInstance(indices=np.arange(20, 40), label="door", score=0.7, color=(2, 2, 2)),
     ]
 
-    with patch("pcseg.services.segmentation_service.ProcessPoolExecutor",
+    with patch("services.segmentation_service.ProcessPoolExecutor",
                side_effect=AssertionError("pool should never be constructed for small instances")):
         results = _run_outlier_filtering(node, instances)
 
@@ -885,7 +885,7 @@ def test_run_outlier_filtering_falls_back_to_serial_when_the_pool_fails():
     inst_a = DetectedInstance(indices=np.arange(0, 6000), label="window", score=0.8, color=(1, 1, 1))
     inst_b = DetectedInstance(indices=np.arange(0, 6000)[::-1].copy(), label="door", score=0.7, color=(2, 2, 2))
 
-    with patch("pcseg.services.segmentation_service.ProcessPoolExecutor",
+    with patch("services.segmentation_service.ProcessPoolExecutor",
                side_effect=OSError("no process-spawn permission")):
         results = _run_outlier_filtering(node, [inst_a, inst_b])
 

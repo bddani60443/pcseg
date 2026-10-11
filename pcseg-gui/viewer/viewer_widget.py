@@ -12,7 +12,7 @@ from datetime import datetime
 import numpy as np
 import OpenGL.GL as gl
 import pyqtgraph.opengl as gl_module
-from pcseg.core.scan_node import ScanNode
+from core.scan_node import ScanNode
 from PyQt6.QtCore import QPoint, QRect, QRectF, QSettings, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import (
     QColor,
@@ -61,22 +61,22 @@ from PyQt6.QtWidgets import (
 from pyqtgraph.Qt import QtCore as pg_QtCore
 from pyqtgraph.Qt import QtGui as pg_QtGui
 
-from pcseg_gui.layers import Layer, LayerInstance
-from pcseg_gui.log_forwarder import (
+from layers import Layer, LayerInstance
+from log_forwarder import (
     LogForwarder,
     attach_log_forwarder,
     detach_log_forwarder,
 )
-from pcseg_gui.viewer.layer_panel import LayerPanel
-from pcseg_gui.viewer.point_cloud_item import (
+from viewer.layer_panel import LayerPanel
+from viewer.point_cloud_item import (
     COLOR_MODES,
     RENDER_MODES,
     ShaderPointCloudItem,
 )
-from pcseg_gui.viewer.range_slider import RangeSlider
-from pcseg_gui.viewer.view_cube import FACE_LABELS, ViewCubeOverlay, face_snap_target
-from pcseg_gui.wheel_guard import install_wheel_guard
-from pcseg_gui.workers import run_in_background
+from viewer.range_slider import RangeSlider
+from viewer.view_cube import FACE_LABELS, ViewCubeOverlay, face_snap_target
+from wheel_guard import install_wheel_guard
+from workers import run_in_background
 
 CHANNEL_CHOICES = ["auto", "rgb", "intensity", "normals"]
 DEFAULT_BACKGROUND_COLOR = "#202020"
@@ -674,7 +674,7 @@ def _channel_arg(combo: QComboBox, node: ScanNode) -> str:
     """
     choice = combo.currentData(Qt.ItemDataRole.UserRole)
     if choice == "auto":
-        from pcseg.core.projection import default_channel
+        from core.projection import default_channel
         return default_channel(node)
     return choice
 
@@ -729,7 +729,7 @@ class Viewer3DWidget(QFrame):
     """
     Loads one point cloud at a time and shows it in an orbit-controlled 3D
     view. All segmentation (prompt-driven sweep, single-point pick) runs
-    directly against the already-loaded ScanNode via pcseg.services -
+    directly against the already-loaded ScanNode via services -
     in-process, no subprocess, no re-loading the file - and is drawn back
     onto the same point cloud instead of requiring an export/reopen roundtrip.
 
@@ -1922,7 +1922,7 @@ class Viewer3DWidget(QFrame):
         CLI never disagree about what "auto" means for a given scan. Different
         scans can resolve differently (depends on which channels that scan
         actually has), so this re-runs on every load, not just once at startup."""
-        from pcseg.core.projection import default_channel
+        from core.projection import default_channel
         resolved = default_channel(node)
         for combo in (self.run_dino_channel, self.run_sam_channel):
             model = combo.model()
@@ -2060,7 +2060,7 @@ class Viewer3DWidget(QFrame):
         if self.node is None:
             self.status_label.setText("Nothing to save - load a scan first.")
             return
-        from pcseg_gui import project_file
+        import project_file
         theta_range, phi_range = self._roi_ranges()
         project_file.save_project(
             path,
@@ -2130,7 +2130,7 @@ class Viewer3DWidget(QFrame):
         self.node still holds the OLD points these instances' indices
         actually refer to - it's the only piece that needs those old points
         at all, and once built it doesn't need them again."""
-        from pcseg_gui.viewer import label_transfer
+        from viewer import label_transfer
 
         layers_meta = []
         all_points: list[np.ndarray] = []
@@ -2165,7 +2165,7 @@ class Viewer3DWidget(QFrame):
         returned stats so the caller can tell the user.
 
         Returns (new_layers, stats) - stats = {"kept": n, "dropped": n}."""
-        from pcseg_gui.viewer import label_transfer
+        from viewer import label_transfer
 
         new_points_xyz = self._to_world_points(np.arange(self.node.point_count))
         result = label_transfer.transfer_owners(new_points_xyz, voxel_owner_map)
@@ -2575,7 +2575,7 @@ class Viewer3DWidget(QFrame):
         if self.node is None or self.point_item is None:
             return
 
-        from pcseg.core.classification import compose_layers
+        from core.classification import compose_layers
 
         entries = self.layer_panel.compose_entries()  # [(label, indices, color), ...] bottom-of-stack first
         self.node.point_classes = None
@@ -2652,7 +2652,7 @@ class Viewer3DWidget(QFrame):
         if not path:
             return
 
-        from pcseg.io.exporters import export_to_las
+        from fileio.exporters import export_to_las
 
         message = export_to_las(self.node, path, mask=mask)
         self.status_label.setText(message)
@@ -2679,9 +2679,9 @@ class Viewer3DWidget(QFrame):
 
     def _ensure_dino_service(self):
         if self._dino_service is None:
-            from pcseg.services.dino_service import DinoService
+            from services.dino_service import DinoService
 
-            from pcseg_gui import model_sizes
+            import model_sizes
             config_path, checkpoint_path = model_sizes.dino_paths(self.dino_size)
             logging.info(f"Loading GroundingDINO ({self.dino_size}, first use of this size this session)...")
             self._dino_service = DinoService(config_path=str(config_path), checkpoint_path=str(checkpoint_path))
@@ -2689,9 +2689,9 @@ class Viewer3DWidget(QFrame):
 
     def _ensure_sam_service(self):
         if self._sam_service is None:
-            from pcseg.services.sam_service import SamService
+            from services.sam_service import SamService
 
-            from pcseg_gui import model_sizes
+            import model_sizes
             config_path, checkpoint_path = model_sizes.sam_paths(self.sam_size)
             logging.info(f"Loading SAM2 ({self.sam_size}, first use of this size this session)...")
             self._sam_service = SamService(config_path=config_path, checkpoint_path=str(checkpoint_path))
@@ -2707,7 +2707,7 @@ class Viewer3DWidget(QFrame):
         not just a tidier result): when ROI is off, theta_range/phi_range are
         both None, which compute_coverage_grid already treats as "the scan's
         own real-data extent"."""
-        from pcseg.core.projection import (
+        from core.projection import (
             compute_coverage_grid,
             compute_multiscale_coverage_grid,
             real_scan_mask,
@@ -2757,7 +2757,7 @@ class Viewer3DWidget(QFrame):
         if not path:
             return
 
-        from pcseg.core.projection import render_coverage_grid_preview
+        from core.projection import render_coverage_grid_preview
 
         node = self.node
         fov = self.run_fov.value()
@@ -2793,7 +2793,7 @@ class Viewer3DWidget(QFrame):
         if self.node is None or self._busy:
             return
 
-        from pcseg.services.segmentation_service import SegmentationService
+        from services.segmentation_service import SegmentationService
 
         view_grid = self._build_view_grid()
         dino = self._ensure_dino_service()
@@ -3493,7 +3493,7 @@ class Viewer3DWidget(QFrame):
 
     def _run_pick_segmentation(self, point_index: int, screen_pos: QPoint, subtract: bool = False,
                                 extra_indices: list[int] | None = None) -> None:
-        from pcseg.services.point_segmentation_service import segment_at_point
+        from services.point_segmentation_service import segment_at_point
 
         node = self.node
         layer = self._pick_target_layer
@@ -3716,7 +3716,7 @@ class Viewer3DWidget(QFrame):
             color = layer.instances[0].color
         else:
             label = layer.name
-            from pcseg.core.colors import generate_label_color
+            from core.colors import generate_label_color
             color = generate_label_color([label])[0]
         return label, color
 
@@ -3824,7 +3824,7 @@ class Viewer3DWidget(QFrame):
         if not self._pending_picks or self.node is None:
             return
 
-        from pcseg.core.mask_filters import filter_mask_outliers
+        from core.mask_filters import filter_mask_outliers
 
         finalized: list[_PendingPick] = []
         for pick in self._pending_picks:

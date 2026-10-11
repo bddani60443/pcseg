@@ -14,9 +14,9 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from pcseg_gui import model_sizes
-from pcseg_gui.log_panel import LogPanel
-from pcseg_gui.workers import run_in_background
+import model_sizes
+from log_panel import LogPanel
+from workers import run_in_background
 
 
 class ModelsDialog(QDialog):

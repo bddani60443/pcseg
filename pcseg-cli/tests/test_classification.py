@@ -6,8 +6,8 @@ dtype; only the LAS exporter's format-specific ceiling should clip values.
 """
 import numpy as np
 
-from pcseg.core.classification import assign_classifications, compose_layers
-from pcseg.core.scan_node import ScanNode
+from core.classification import assign_classifications, compose_layers
+from core.scan_node import ScanNode
 
 
 def _make_node(n: int) -> ScanNode:

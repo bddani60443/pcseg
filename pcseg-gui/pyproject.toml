@@ -24,7 +24,24 @@ dependencies = [
 ]
 
 [project.scripts]
-pcseg-view = "pcseg_gui.main:main"
+pcseg-view = "main:main"
+
+[tool.setuptools]
+py-modules = [
+    "crash_log",
+    "launcher",
+    "layers",
+    "loaders",
+    "log_forwarder",
+    "log_panel",
+    "main",
+    "main_window",
+    "model_sizes",
+    "models_dialog",
+    "project_file",
+    "wheel_guard",
+    "workers",
+]
 
 [tool.setuptools.packages.find]
-where = ["src"]
+include = ["viewer*"]

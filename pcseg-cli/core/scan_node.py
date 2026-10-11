@@ -6,7 +6,7 @@ from typing import Optional
 import numpy as np
 from numpy.typing import NDArray
 
-from pcseg.core.mapping import IndexMapper
+from core.mapping import IndexMapper
 
 
 @dataclass

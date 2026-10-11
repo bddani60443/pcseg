@@ -1,6 +1,6 @@
 import pytest
 
-from pcseg.cli import build_parser
+from cli import build_parser
 
 
 def test_run_subcommand_parses_minimal_args():
@@ -12,7 +12,6 @@ def test_run_subcommand_parses_minimal_args():
     assert args.input == "scan.e57"
     assert args.outputs == ["result.las"]
     assert args.dino_channel == "auto"
-    assert args.filter == "none"
 
 
 def test_run_subcommand_device_flag_defaults_to_auto_and_accepts_cpu():

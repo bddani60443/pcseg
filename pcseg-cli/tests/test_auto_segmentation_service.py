@@ -9,17 +9,17 @@ dropped for having no valid scan data.
 
 auto_segmentation_service.py takes its mask backend as a plain injected callable
 (AutoMaskBackend) rather than importing DinoService/SamService itself, and its
-generate_label_color import comes from pcseg.core.colors (pure hashlib/numpy) -
+generate_label_color import comes from core.colors (pure hashlib/numpy) -
 so, unlike the rest of the segmentation-backend code, this module has no torch
 dependency at all and this test needs no optional extra / skip gate.
 """
 import numpy as np
 import pytest
 
-from pcseg.core.mapping import IndexMapper
-from pcseg.core.scan_node import ScanNode
-from pcseg.exceptions import SweepCancelled
-from pcseg.services.auto_segmentation_service import AutoSegmentationService
+from core.mapping import IndexMapper
+from core.scan_node import ScanNode
+from exceptions import SweepCancelled
+from services.auto_segmentation_service import AutoSegmentationService
 
 
 def _make_node(distance: float = 100.0) -> ScanNode:

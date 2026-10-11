@@ -11,7 +11,7 @@ import pytest
 
 pytest.importorskip("torch")
 
-from pcseg.services.sam_service import SamService  # noqa: E402
+from services.sam_service import SamService  # noqa: E402
 
 
 class _FakePredictor:
