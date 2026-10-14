@@ -8,9 +8,9 @@ def find_project_root(marker_relative_path: str, file: str) -> Path:
     Returns the pcseg-cli project root - the directory `external/` (the
     segmentation backends' downloaded weights) lives under.
 
-    `Path(file).resolve().parents[3]` alone assumes an editable
+    `Path(file).resolve().parents[1]` alone assumes an editable
     (`pip install -e .`) install, where `__file__` still points into the real
-    source tree under `pcseg-cli/src/pcseg/...`. A regular (non-editable)
+    source tree under `pcseg-cli/services/...`. A regular (non-editable)
     install copies this file into site-packages instead, silently pointing
     "project root" at the Python installation directory rather than wherever
     `external/` was actually downloaded to by install_segmentation_backends -
@@ -30,7 +30,7 @@ def find_project_root(marker_relative_path: str, file: str) -> Path:
     callers still get a deterministic, previously-correct path to report in
     their own error messages rather than a hard crash here.
     """
-    file_based = Path(file).resolve().parents[3]
+    file_based = Path(file).resolve().parents[1]
     candidates = [file_based, Path.cwd(), Path.cwd().parent / "pcseg-cli"]
     for root in candidates:
         if (root / marker_relative_path).exists():

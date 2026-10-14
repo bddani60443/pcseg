@@ -215,6 +215,76 @@ intersection. **Not yet validated against a real scan**
 Run `pcseg run --help` for the full flag reference (sweep resolution,
 pitch angles, DINO thresholds, post-filtering).
 
+### Examples on the demo scan
+
+`examples/outdoor_demo.e57` is one outdoor TLS station (3.6 million points,
+already subsampled - load it with `--decimation 1`). The full-resolution
+scan (58.2 million points) and a Rohbau3D construction-site station with
+per-point ground truth are in the example data record on Zenodo:
+https://doi.org/10.5281/zenodo.23324547. Both examples below are run from
+`pcseg-cli/`.
+
+**Basic: default (tiny) models, four classes.** Needs only the weights the
+installation step above already fetched:
+
+```bash
+pcseg run --input ../examples/outdoor_demo.e57 --decimation 1 \
+  --prompt "window, building, road, curb" --auto-coverage \
+  --dino-box-threshold 0.35 --dino-text-threshold 0.35 --sam-score-threshold 0.90 \
+  --out result.las --out preview.png
+```
+
+This gives 207 instances across 10 views. Duplicates are not merged here,
+so an object seen from two overlapping views is counted twice - see the
+next example for `--merge-duplicates`.
+
+**Optional: larger models, six classes.** GroundingDINO SwinB and SAM2.1
+Hiera-large (see [Using a different model size](#using-a-different-model-size)),
+merged duplicates and a minimum DINO score:
+
+```bash
+# once: fetch the larger weights
+./scripts/install_segmentation_backends.sh --dino-size base --sam-size large
+
+pcseg run --input ../examples/outdoor_demo.e57 --decimation 1 \
+  --prompt "window, building, road, curb, bush, grass" --auto-coverage \
+  --merge-duplicates --merge-iou 0.10 --min-score 0.42 \
+  --dino-config external/GroundingDINO-external/groundingdino/config/GroundingDINO_SwinB_cfg.py \
+  --dino-checkpoint external/GroundingDINO-external/weights/groundingdino_swinb_cogcoor.pth \
+  --sam-config configs/sam2.1/sam2.1_hiera_l.yaml \
+  --sam-checkpoint external/sam2-external/checkpoints/sam2.1_hiera_large.pt \
+  --out result.las --out preview.png
+```
+
+This gives 117 objects (98 windows, 7 buildings, 7 bushes, 2 curbs, 2 grass
+areas, 1 road) across 10 views:
+
+![Segmentation of the outdoor demo scan](examples/outdoor_demo_segmentation.jpg)
+
+The masks are `preview.png`; the bounding boxes and labels (with each
+instance's DINO score) were drawn on top of it for this figure. What the
+flags do here:
+
+- `--merge-duplicates --merge-iou 0.10` fuses the fragments of one object
+  seen from several overlapping views into one instance - without it the
+  same command gives 260 instances, with most buildings and the road
+  counted several times.
+- `--min-score 0.42` drops the final instances GroundingDINO was least sure
+  about (61 of 178 here) - weak boxes on distant buildings and thin false
+  "curb" strips. It applies to every label alike, so it also removes some
+  distant windows; lower it to keep more of them.
+- The DINO box/text thresholds (0.30/0.25) and the SAM2 score threshold
+  (off) are left at their defaults.
+
+With the default tiny models (drop the four `--dino-*`/`--sam-*` path
+flags) the same command is faster and gives 104 objects, mainly fewer windows on
+the distant buildings (84 instead of 98).
+
+The same run in pcseg-gui: select GroundingDINO `base` and SAM2 `large` in
+*Tools > Manage Models...*, open the scan with Load detail 1, enter the
+prompt, and set **Min score** to 0.42 under Advanced settings - merging at
+IoU 0.10 is already on by default there.
+
 ### Prompt-free: `auto-segment`
 
 ```bash

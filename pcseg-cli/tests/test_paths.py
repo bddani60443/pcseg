@@ -1,7 +1,7 @@
 """
 Regression test for a real bug hit on a real Windows machine: a stale
 non-editable pip install copied dino_service.py into site-packages, so
-Path(__file__).resolve().parents[3] silently pointed "project root" at the
+Path(__file__).resolve().parents[1] silently pointed "project root" at the
 Python installation directory instead of the actual pcseg-cli checkout where
 external/ (the downloaded model weights) actually lives - producing a
 FileNotFoundError deep inside model loading with no clue what went wrong.
@@ -17,7 +17,7 @@ def test_find_project_root_prefers_the_file_based_root_when_it_has_the_marker(tm
     (real_root / "external" / "weights").mkdir(parents=True)
     (real_root / "external" / "weights" / "model.pt").touch()
 
-    fake_file = real_root / "src" / "pcseg" / "services" / "dino_service.py"
+    fake_file = real_root / "services" / "dino_service.py"
     fake_file.parent.mkdir(parents=True)
     fake_file.touch()
 
@@ -61,7 +61,7 @@ def test_find_project_root_falls_back_to_cwds_sibling_pcseg_cli(tmp_path, monkey
 
 
 def test_find_project_root_falls_back_to_file_based_guess_when_nothing_has_the_marker(tmp_path, monkeypatch):
-    fake_file = tmp_path / "pcseg-cli" / "src" / "pcseg" / "services" / "dino_service.py"
+    fake_file = tmp_path / "pcseg-cli" / "services" / "dino_service.py"
     fake_file.parent.mkdir(parents=True)
     fake_file.touch()
 
@@ -72,4 +72,4 @@ def test_find_project_root_falls_back_to_file_based_guess_when_nothing_has_the_m
     # Nothing has the marker (weights not downloaded yet) - must not raise,
     # must deterministically return the __file__-based guess.
     result = find_project_root("external/weights/model.pt", str(fake_file))
-    assert result == fake_file.resolve().parents[3]
+    assert result == fake_file.resolve().parents[1]

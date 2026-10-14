@@ -33,7 +33,7 @@ os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 # SAM2's Hydra-resolved config path these are CWD-relative - anchor them to this repo's
 # own root so they still resolve when pcseg is invoked from somewhere else (e.g. the
 # pcseg-gui viewer, or `pcseg` on PATH run from any directory). See find_project_root
-# for why this isn't just Path(__file__).resolve().parents[3].
+# for why this isn't just Path(__file__).resolve().parents[1].
 _DINO_CKPT_REL = "external/GroundingDINO-external/weights/groundingdino_swint_ogc.pth"
 _PROJECT_ROOT = find_project_root(_DINO_CKPT_REL, __file__)
 DEFAULT_CONFIG_PATH = str(_PROJECT_ROOT / "external/GroundingDINO-external/groundingdino/config/GroundingDINO_SwinT_OGC.py")

@@ -15,7 +15,7 @@ DEFAULT_CONFIG_PATH = "configs/sam2.1/sam2.1_hiera_t.yaml"
 # ...but the checkpoint is loaded via plain torch.load(), which *is* CWD-relative -
 # anchor it to this repo's own root so it still resolves when pcseg is invoked from
 # somewhere else (e.g. the pcseg-gui viewer, or `pcseg` on PATH run from any directory).
-# See find_project_root for why this isn't just Path(__file__).resolve().parents[3].
+# See find_project_root for why this isn't just Path(__file__).resolve().parents[1].
 _SAM_CKPT_REL = "external/sam2-external/checkpoints/sam2.1_hiera_tiny.pt"
 _PROJECT_ROOT = find_project_root(_SAM_CKPT_REL, __file__)
 DEFAULT_CHECKPOINT_PATH = str(_PROJECT_ROOT / _SAM_CKPT_REL)
