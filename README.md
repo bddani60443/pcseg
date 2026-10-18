@@ -1,5 +1,13 @@
 # pcseg
-A command-line pipeline for segmenting structured terrestrial laser scanning (TLS) / LiDAR point clouds.
+Prompt-driven and automatic segmentation of structured terrestrial laser
+scanning (TLS) / LiDAR point clouds, from the command line (`pcseg-cli/`) or
+a desktop viewer (`pcseg-gui/`).
+
+![pcseg result on the outdoor demo scan: windows, buildings, road, curbs, bushes and grass](examples/outdoor_demo_segmentation.jpg)
+
+*117 objects found by the prompt "window, building, road, curb, bush, grass"
+on the bundled demo scan - see [Examples on the demo scan](#examples-on-the-demo-scan)
+for the command. Example data: https://doi.org/10.5281/zenodo.23324547*
 
 - `pcseg run` - prompt-driven: given a text prompt (e.g. `"door, window"`),
   [GroundingDINO](https://github.com/IDEA-Research/GroundingDINO) detects
@@ -380,18 +388,41 @@ decimation 16 does not. Treat `--export-decimation` as a way to get a denser
 
 ## Project layout
 
+![pcseg architecture](docs/images/architecture.png)
+
 ```
-src/pcseg/
+pcseg-cli/
   core/        # pure geometry, filtering, classification, mask-merge logic - no Qt, no ML models
-  io/          # E57 loading, LAS/E57/image export
+  fileio/      # E57 loading, LAS/E57/image export
   services/    # DINO / SAM2 wrappers and the three pipeline orchestrators (prompted, auto-segment, pick-segment)
   cli.py       # argparse entry point (run, auto-segment, pick-segment)
-tests/         # unit tests for the pure core/ logic (no GPU or model weights needed)
+  scripts/     # installer for the segmentation backends and model weights
+  benchmarks/  # runtime benchmark and accuracy evaluation (see below)
+  tests/       # unit and end-to-end tests (no GPU or model weights needed)
+pcseg-gui/     # the desktop viewer (separate package, installed into the same environment)
+examples/      # outdoor_demo.e57 demo scan
 ```
+
+## Benchmarks and accuracy
+
+`pcseg-cli/benchmarks/` holds the scripts behind the runtime and accuracy
+numbers of the pcseg article: `benchmark.py` (runtime per stage and peak GPU
+memory), `evaluate.py` (point-level IoU / precision / recall against a
+ground-truth label image) and `make_demo_subset.py` (the subsampled demo
+scan). See [its README](pcseg-cli/benchmarks/README.md).
+
+Because a structured scan has one point per panorama pixel, the ground truth
+is a label image over the panorama. Example on the Rohbau3D construction-site
+station from the Zenodo record - ground truth (top), pcseg with the prompt
+"ceiling, floor, wall, column" (middle), misclassified points in red
+(bottom):
+
+![Ground truth vs. pcseg prediction on a Rohbau3D station](docs/images/rohbau3d_example.jpg)
 
 ## Development
 
 ```bash
+cd pcseg-cli
 pip install -e ".[dev]"
 pytest
 ```
@@ -406,6 +437,8 @@ accumulate as a reorderable stack of layers (see
 "Layers" below) that you can edit and export. Built for producing figures
 and quick interactive exploration; not a persistent-project tool - the
 layer stack lives only in this session, until you export it.
+
+![pcseg-gui with the four-class result on the demo scan](docs/images/viewer.jpg)
 
 ## Install
 
