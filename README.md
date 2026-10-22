@@ -5,6 +5,9 @@ a desktop viewer (`pcseg-gui/`).
 
 ![pcseg result on the outdoor demo scan: windows, buildings, road, curbs, bushes and grass](examples/outdoor_demo_segmentation.jpg)
 
+The same result as a point cloud, seen from six viewpoints above the courtyard: segmented points in their class colours, the rest of the scan in its original colours. The black disc in the scanner position.
+![The segmented point cloud of the outdoor demo scan from six viewpoints](examples/outdoor_demo_pointcloud_views.jpg)
+
 *117 objects found by the prompt "window, building, road, curb, bush, grass"
 on the bundled demo scan - see [Examples on the demo scan](#examples-on-the-demo-scan)
 for the command. Example data: https://doi.org/10.5281/zenodo.23324547*
